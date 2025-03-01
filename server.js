@@ -8,10 +8,13 @@ const port = 3001;
 // Configure CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));  // Serve static files from current directory
+app.use(express.static('public'));  // Serve static files from the public directory
 
 // Set the path to your Obsidian vault
 const OBSIDIAN_PATH = '/home/nondescript/mind/mind/Projects/Geoguessr/Regions';
+
+// Add route to serve map data
+app.use('/map_data', express.static(path.join(__dirname, 'map_data')));
 
 // API endpoint to get all countries and cells
 app.get('/api/progress', (req, res) => {
@@ -84,6 +87,41 @@ app.post('/api/flashcard', (req, res) => {
         res.json({ success: true });
     } catch (error) {
         console.error('Error creating flashcard:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// API endpoint to get regions for a country
+app.get('/api/regions/:countryId', (req, res) => {
+    try {
+        const countryId = req.params.countryId.toLowerCase();
+        const regionsPath = path.join(__dirname, 'map_data', `${countryId}_regions.json`);
+        
+        // Check if regions file exists
+        if (!fs.existsSync(regionsPath)) {
+            // If not, check if we have raw data to process
+            const rawDataPath = path.join(__dirname, 'map_data', `${countryId}.json`);
+            
+            if (!fs.existsSync(rawDataPath)) {
+                return res.status(404).json({ 
+                    error: 'Country not found',
+                    message: `No data found for country '${countryId}'` 
+                });
+            }
+            
+            return res.status(404).json({
+                error: 'Regions not generated',
+                message: `Regions have not been generated for '${countryId}'. Run 'node src/create-regions.js ${countryId}' to generate them.`
+            });
+        }
+        
+        // Read and return the regions
+        const regionsData = fs.readFileSync(regionsPath, 'utf8');
+        const regions = JSON.parse(regionsData);
+        
+        res.json(regions);
+    } catch (error) {
+        console.error('Error retrieving regions:', error);
         res.status(500).json({ error: error.message });
     }
 });

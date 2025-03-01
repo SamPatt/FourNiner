@@ -4,10 +4,15 @@
     "description": "Geoguessr training app with Obsidian integration",
     "main": "server.js",
     "scripts": {
-      "start": "node server.js"
+        "start": "node server.js"
     },
     "dependencies": {
-      "express": "^4.17.1",
-      "cors": "^2.8.5"
+        "cors": "^2.8.5",
+        "express": "^4.17.1",
+        "geojson-clustering": "^1.1.5",
+        "geojson-tools": "^0.2.2",
+        "leaflet": "^1.9.4",
+        "leaflet-geojson-vt": "^1.1.0",
+        "turf": "^3.0.14"
     }
-  }
+}

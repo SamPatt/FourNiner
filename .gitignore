@@ -18,3 +18,7 @@ pids
 # OS specific files
 .DS_Store
 Thumbs.db 
+
+
+# Map data  
+map_data/

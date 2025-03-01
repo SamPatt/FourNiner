@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geoguessr Chess Grid Training System</title>
+    <title>Geoguessr Natural Regions Training System</title>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <style>
@@ -101,7 +101,7 @@
             padding: 10px;
             border-radius: 4px;
         }
-        .chess-grid {
+        .regions-grid {
             margin-top: 15px;
         }
         .stats {
@@ -121,15 +121,60 @@
         .selected-cell {
             border: 3px solid #e74c3c !important;
         }
+        .region-popup {
+            min-width: 200px;
+        }
+        .region-popup h4 {
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        .view-mode-toggle {
+            margin-bottom: 15px;
+        }
+        .climate-legend {
+            margin-top: 20px;
+            border-top: 1px solid #4b6584;
+            padding-top: 15px;
+        }
+        .climate-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .climate-color {
+            width: 15px;
+            height: 15px;
+            margin-right: 8px;
+            border-radius: 3px;
+        }
+        .mode-bar {
+            padding: 10px;
+            background-color: #192a56;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .mode-bar a {
+            color: white;
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+        .mode-bar a.active {
+            background-color: #3498db;
+        }
+        .mode-bar a:hover {
+            background-color: #2980b9;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="sidebar">
             <h2>Geoguessr Trainer</h2>
-            <div class="mode-bar" style="padding: 10px; background-color: #192a56; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <a href="index.html" style="color: white; text-decoration: none; padding: 5px 10px; border-radius: 3px; background-color: #3498db;">Chess Grid</a>
-                <a href="natural-regions.html" style="color: white; text-decoration: none; padding: 5px 10px; border-radius: 3px;">Natural Regions</a>
+            <div class="mode-bar">
+                <a href="index.html">Chess Grid</a>
+                <a href="natural-regions.html" class="active">Natural Regions</a>
             </div>
             <div>
                 <label for="country-select">Select Country:</label>
@@ -159,20 +204,20 @@
             
             <div class="progress-container">
                 <h3>Learning Progress</h3>
-                <div>Mastered: <span id="mastered-count">0</span>/64</div>
-                <div>Learning: <span id="learning-count">0</span>/64</div>
-                <div>Untouched: <span id="untouched-count">64</span>/64</div>
+                <div>Mastered: <span id="mastered-count">0</span>/<span id="total-regions">0</span></div>
+                <div>Learning: <span id="learning-count">0</span>/<span id="total-regions-2">0</span></div>
+                <div>Untouched: <span id="untouched-count">0</span>/<span id="total-regions-3">0</span></div>
             </div>
             
-            <div class="chess-grid">
-                <h3>Grid Cells</h3>
+            <div class="regions-grid">
+                <h3>Natural Regions</h3>
                 <div id="grid-container"></div>
             </div>
             
             <div class="stats">
                 <h3>Statistics</h3>
                 <div>Countries started: <span id="countries-started">0</span>/20</div>
-                <div>Total cells mastered: <span id="total-mastered">0</span>/1280</div>
+                <div>Total regions mastered: <span id="total-mastered">0</span></div>
                 <div>Estimated Champion ETA: <span id="eta">--</span></div>
             </div>
         </div>
@@ -200,12 +245,15 @@
                 <h3>Flashcard Preview</h3>
                 <div>
                     <h4>No flashcard selected</h4>
-                    <p>Select a grid cell to view or create a flashcard.</p>
+                    <p>Select a region to view or create a flashcard.</p>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Load the geo-regions.js script -->
+    <script src="geo-regions.js"></script>
+    
     <script>
         // Initialize the map
         const map = L.map('map').setView([20, 0], 2);
@@ -324,183 +372,38 @@
         let userProgress = {};
         let obsidianDirectory = null;
         
+        // Create GeoRegions instance
+        const geoRegions = new GeoRegions(map);
+        
         // Initialize user progress for all countries
         function initializeUserProgress() {
-            Object.keys(countries).forEach(country => {
-                userProgress[country] = {};
-                for (let i = 0; i < 8; i++) {
-                    const row = String.fromCharCode(65 + i);
-                    for (let j = 1; j <= 8; j++) {
-                        userProgress[country][`${row}${j}`] = 'untouched';
-                    }
-                }
-            });
+            userProgress = {};
         }
         
-        // Current selected country and cell
+        // Current selected country and region
         let currentCountry = 'russia';
-        let selectedCell = null;
+        let selectedRegion = null;
         
-        // Draw grid for a country
-        function drawCountryGrid(countryId) {
-            // Clear any existing grid
-            if (window.gridLayer) {
-                map.removeLayer(window.gridLayer);
-            }
-            
-            const country = countries[countryId];
-            const bounds = country.bounds;
-            
-            // Fit map to country bounds
-            map.fitBounds(bounds);
-            
-            // Create a feature group for the grid
-            window.gridLayer = L.featureGroup().addTo(map);
-            
-            // Calculate grid cell sizes
-            const latDiff = bounds[1][0] - bounds[0][0];
-            const lngDiff = bounds[1][1] - bounds[0][1];
-            const latStep = latDiff / 8;
-            const lngStep = lngDiff / 8;
-            
-            // Draw the grid
-            for (let i = 0; i < 8; i++) {
-                const row = String.fromCharCode(65 + i);
-                
-                for (let j = 0; j < 8; j++) {
-                    const col = j + 1;
-                    const cellId = `${row}${col}`;
-                    
-                    // Calculate bounds for this cell - REVERSED to have A1 at bottom
-                    const cellBounds = [
-                        [bounds[0][0] + latStep * i, bounds[0][1] + lngStep * j],
-                        [bounds[0][0] + latStep * (i + 1), bounds[0][1] + lngStep * (j + 1)]
-                    ];
-                    
-                    // Create rectangle for the cell
-                    const cellStatus = userProgress[countryId][cellId];
-                    let fillColor;
-                    
-                    switch (cellStatus) {
-                        case 'mastered':
-                            fillColor = '#27ae60';
-                            break;
-                        case 'learning':
-                            fillColor = '#f39c12';
-                            break;
-                        default:
-                            fillColor = '#ecf0f1';
-                    }
-                    
-                    const rectangle = L.rectangle(cellBounds, {
-                        color: '#333',
-                        weight: 1,
-                        fillColor: fillColor,
-                        fillOpacity: 0.4
-                    }).addTo(window.gridLayer);
-                    
-                    // Add a label to the center of the cell
-                    const center = [
-                        (cellBounds[0][0] + cellBounds[1][0]) / 2,
-                        (cellBounds[0][1] + cellBounds[1][1]) / 2
-                    ];
-                    
-                    const label = L.divIcon({
-                        className: 'region-label',
-                        html: cellId,
-                        iconSize: [20, 10]
-                    });
-                    
-                    L.marker(center, {
-                        icon: label
-                    }).addTo(window.gridLayer);
-                    
-                    // Store cell data and add click event
-                    rectangle.cellId = cellId;
-                    rectangle.countryId = countryId;
-                    rectangle.on('click', function(e) {
-                        selectCell(this.countryId, this.cellId);
-                    });
-                }
-            }
-        }
-        
-        // Create chess-like grid in sidebar
-        function createChessGrid(countryId) {
-            const gridContainer = document.getElementById('grid-container');
-            gridContainer.innerHTML = '';
-            
-            // Create grid from bottom to top (A1 at bottom)
-            for (let i = 7; i >= 0; i--) {
-                const row = String.fromCharCode(65 + i);
-                const gridRow = document.createElement('div');
-                gridRow.className = 'grid-row';
-                
-                for (let j = 1; j <= 8; j++) {
-                    const cellId = `${row}${j}`;
-                    const cell = document.createElement('div');
-                    cell.className = 'grid-cell';
-                    cell.textContent = cellId;
-                    cell.dataset.cellId = cellId;
-                    cell.dataset.countryId = countryId;
-                    
-                    // Add status class
-                    const status = userProgress[countryId][cellId];
-                    cell.classList.add(status);
-                    
-                    // Add click event
-                    cell.addEventListener('click', function() {
-                        selectCell(this.dataset.countryId, this.dataset.cellId);
-                    });
-                    
-                    gridRow.appendChild(cell);
-                }
-                
-                gridContainer.appendChild(gridRow);
-            }
-        }
-        
-        // Select a cell
-        function selectCell(countryId, cellId) {
-            // Update selected cell
-            selectedCell = { countryId, cellId };
-            
-            // Update UI to show selection
-            document.querySelectorAll('.grid-cell').forEach(cell => {
-                cell.classList.remove('selected-cell');
-            });
-            
-            const cell = document.querySelector(`.grid-cell[data-cell-id="${cellId}"][data-country-id="${countryId}"]`);
-            if (cell) {
-                cell.classList.add('selected-cell');
-            }
-            
-            document.getElementById('selected-cell').textContent = `${countries[countryId].name} ${cellId}`;
-            
-            // Show flashcard preview
-            updateFlashcardPreview(countryId, cellId);
-        }
-        
-        // Generate flashcard markdown content without SR comment
-        function generateFlashcardMarkdown(countryId, cellId) {
+        // Generate flashcard markdown content for a region
+        function generateFlashcardMarkdown(countryId, regionId) {
             // Replace spaces with hyphens in tags
             const countryTag = countries[countryId].name.replace(/\s+/g, '-').toLowerCase();
             
-            return `#flash-geo/regions/${countryTag}/${cellId}
+            return `#flash-geo/regions/${countryTag}/${regionId}
 ![Screenshot of the region]
 ?
-${countries[countryId].name} ${cellId}`;
+${countries[countryId].name} Region ${regionId.substring(1)}`;
         }
         
         // Update flashcard preview
-        function updateFlashcardPreview(countryId, cellId) {
-            const status = userProgress[countryId][cellId];
+        function updateFlashcardPreview(countryId, regionId) {
+            const status = userProgress[countryId]?.[regionId] || 'untouched';
             const container = document.getElementById('flashcard-preview');
             
-            let content = `<h3>Flashcard for ${countries[countryId].name} ${cellId}</h3>`;
+            let content = `<h3>Flashcard for ${countries[countryId].name} Region ${regionId.substring(1)}</h3>`;
             
             // Generate markdown with status
-            let markdown = generateFlashcardMarkdown(countryId, cellId);
+            let markdown = generateFlashcardMarkdown(countryId, regionId);
             if (status !== 'untouched') {
                 markdown = updateMarkdownWithStatus(markdown, status);
             }
@@ -520,52 +423,41 @@ ${countries[countryId].name} ${cellId}`;
             container.innerHTML = content;
         }
         
-        // Mark cell as learning or mastered
-        function updateCellStatus(status) {
-            if (!selectedCell) return;
+        // Mark region as learning or mastered
+        function updateRegionStatus(status) {
+            if (!selectedRegion) return;
             
-            const { countryId, cellId } = selectedCell;
-            const oldStatus = userProgress[countryId][cellId];
-            userProgress[countryId][cellId] = status;
+            const { countryId, regionId } = selectedRegion;
+            const regionId_str = `r${regionId}`;
+            const oldStatus = userProgress[countryId]?.[regionId_str] || 'untouched';
             
-            // Update UI
-            document.querySelectorAll(`.grid-cell[data-cell-id="${cellId}"][data-country-id="${countryId}"]`).forEach(cell => {
-                cell.className = `grid-cell ${status}`;
-                if (selectedCell.cellId === cellId) {
-                    cell.classList.add('selected-cell');
-                }
-            });
+            // Update the region status
+            geoRegions.updateRegionStatus(countryId, regionId_str, status);
             
-            // Update grid on map
-            drawCountryGrid(countryId);
-            
-            // Update statistics
-            updateStats();
+            // Update flashcard preview
+            updateFlashcardPreview(countryId, regionId_str);
             
             // Update the markdown file if we have access to Obsidian
             if (obsidianDirectory && oldStatus !== status) {
-                updateFlashcardStatus(countryId, cellId, status)
+                updateFlashcardStatus(countryId, regionId_str, status)
                     .then(() => {
                         console.log(`Updated flashcard status to ${status}`);
-                        // Update the flashcard preview
-                        updateFlashcardPreview(countryId, cellId);
                     })
                     .catch(error => {
                         console.error("Error updating flashcard:", error);
-                        // Don't show alert to avoid disrupting the user experience
                     });
             }
         }
         
-        // Add a new function to update the flashcard status in the markdown file
-        async function updateFlashcardStatus(countryId, cellId, status) {
+        // Update the flashcard status in the markdown file
+        async function updateFlashcardStatus(countryId, regionId, status) {
             try {
                 // Get the country directory name
                 const countryName = countries[countryId].name;
                 const countryDirName = countryName.replace(/\s+/g, '-').toLowerCase();
                 
                 // Generate markdown with status
-                let markdown = generateFlashcardMarkdown(countryId, cellId);
+                let markdown = generateFlashcardMarkdown(countryId, regionId);
                 markdown = updateMarkdownWithStatus(markdown, status);
                 
                 // Send to server
@@ -576,7 +468,7 @@ ${countries[countryId].name} ${cellId}`;
                     },
                     body: JSON.stringify({
                         countryId: countryDirName,
-                        cellId: cellId,
+                        cellId: regionId,
                         content: markdown,
                         status: status
                     })
@@ -626,11 +518,11 @@ ${countries[countryId].name} ${cellId}`;
             return content;
         }
         
-        // Update the createFlashcardInObsidian function to include status
-        async function createFlashcardInObsidian(countryId, cellId, status = null) {
+        // Create flashcard in Obsidian
+        async function createFlashcardInObsidian(countryId, regionId, status = null) {
             try {
                 // Generate markdown with status if provided
-                let markdown = generateFlashcardMarkdown(countryId, cellId);
+                let markdown = generateFlashcardMarkdown(countryId, regionId);
                 
                 // Add status tag if provided
                 if (status && status !== 'untouched') {
@@ -649,7 +541,7 @@ ${countries[countryId].name} ${cellId}`;
                     },
                     body: JSON.stringify({
                         countryId: countryDirName,
-                        cellId: cellId,
+                        cellId: regionId,
                         content: markdown,
                         status: status
                     })
@@ -667,73 +559,7 @@ ${countries[countryId].name} ${cellId}`;
             }
         }
         
-        // Store the directory handle in IndexedDB
-        async function storeDirectoryHandle(handle) {
-            try {
-                // Open (or create) the database
-                const db = await openDatabase();
-                
-                // Store the handle
-                const tx = db.transaction('directoryHandles', 'readwrite');
-                await tx.objectStore('directoryHandles').put(handle, 'obsidianDir');
-                await tx.done;
-                
-                console.log('Directory handle stored successfully');
-                return true;
-            } catch (error) {
-                console.error('Failed to store directory handle:', error);
-                return false;
-            }
-        }
-        
-        // Retrieve the directory handle from IndexedDB
-        async function getStoredDirectoryHandle() {
-            try {
-                // Open the database
-                const db = await openDatabase();
-                
-                // Get the handle
-                const tx = db.transaction('directoryHandles', 'readonly');
-                const handle = await tx.objectStore('directoryHandles').get('obsidianDir');
-                await tx.done;
-                
-                if (handle) {
-                    // Verify the handle is still valid and permission is granted
-                    if ((await handle.requestPermission({ mode: 'readwrite' })) === 'granted') {
-                        console.log('Retrieved stored directory handle');
-                        return handle;
-                    } else {
-                        console.log('Permission not granted for stored handle');
-                        return null;
-                    }
-                } else {
-                    console.log('No stored directory handle found');
-                    return null;
-                }
-            } catch (error) {
-                console.error('Failed to retrieve directory handle:', error);
-                return null;
-            }
-        }
-        
-        // Open the IndexedDB database
-        function openDatabase() {
-            return new Promise((resolve, reject) => {
-                const request = indexedDB.open('GeoguessrTrainer', 1);
-                
-                request.onupgradeneeded = () => {
-                    const db = request.result;
-                    if (!db.objectStoreNames.contains('directoryHandles')) {
-                        db.createObjectStore('directoryHandles');
-                    }
-                };
-                
-                request.onsuccess = () => resolve(request.result);
-                request.onerror = () => reject(request.error);
-            });
-        }
-        
-        // Modify the loadFromObsidian function to try using the stored handle first
+        // Load progress from Obsidian
         async function loadFromObsidian() {
             try {
                 // Fetch progress from the server
@@ -761,18 +587,29 @@ ${countries[countryId].name} ${cellId}`;
                     }
                     
                     if (countryId) {
-                        // Apply cell statuses
+                        // Get the prefix for the region IDs
+                        if (!userProgress[countryId]) {
+                            userProgress[countryId] = {};
+                        }
+                        
+                        // Apply cell statuses - convert from A1-H8 format to r0-r31 format
                         Object.keys(serverProgress[countryDirName]).forEach(cellId => {
-                            if (userProgress[countryId][cellId]) {
+                            // Check if it's already in region format (rXX)
+                            if (cellId.startsWith('r')) {
                                 userProgress[countryId][cellId] = serverProgress[countryDirName][cellId];
+                            } else {
+                                // It's in chess format (A1-H8), we need to convert
+                                // For now, we'll just skip it as we're transitioning to the new format
+                                console.log(`Skipping chess grid cell ${cellId} - not compatible with natural regions`);
                             }
                         });
                     }
                 });
                 
-                // Update UI with loaded progress
-                drawCountryGrid(currentCountry);
-                createChessGrid(currentCountry);
+                // Refresh the current country display
+                await loadCurrentCountry();
+                
+                // Update stats
                 updateStats();
                 
                 alert('Successfully loaded progress from Obsidian vault!');
@@ -793,12 +630,24 @@ ${countries[countryId].name} ${cellId}`;
             let learning = 0;
             let untouched = 0;
             
-            Object.keys(userProgress[currentCountry]).forEach(cellId => {
-                const status = userProgress[currentCountry][cellId];
-                if (status === 'mastered') mastered++;
-                else if (status === 'learning') learning++;
-                else untouched++;
+            // Get the total number of regions for this country
+            const totalRegions = geoRegions.getRegionCount();
+            
+            // Update the region count displays
+            document.querySelectorAll('#total-regions, #total-regions-2, #total-regions-3').forEach(el => {
+                el.textContent = totalRegions;
             });
+            
+            // Count the statuses
+            if (userProgress[currentCountry]) {
+                Object.keys(userProgress[currentCountry]).forEach(regionId => {
+                    const status = userProgress[currentCountry][regionId];
+                    if (status === 'mastered') mastered++;
+                    else if (status === 'learning') learning++;
+                });
+            }
+            
+            untouched = totalRegions - mastered - learning;
             
             document.getElementById('mastered-count').textContent = mastered;
             document.getElementById('learning-count').textContent = learning;
@@ -811,14 +660,16 @@ ${countries[countryId].name} ${cellId}`;
             Object.keys(userProgress).forEach(country => {
                 let countryHasProgress = false;
                 
-                Object.keys(userProgress[country]).forEach(cellId => {
-                    if (userProgress[country][cellId] === 'mastered') {
-                        totalMastered++;
-                        countryHasProgress = true;
-                    } else if (userProgress[country][cellId] === 'learning') {
-                        countryHasProgress = true;
-                    }
-                });
+                if (userProgress[country]) {
+                    Object.keys(userProgress[country]).forEach(regionId => {
+                        if (userProgress[country][regionId] === 'mastered') {
+                            totalMastered++;
+                            countryHasProgress = true;
+                        } else if (userProgress[country][regionId] === 'learning') {
+                            countryHasProgress = true;
+                        }
+                    });
+                }
                 
                 if (countryHasProgress) {
                     countriesStarted++;
@@ -829,10 +680,8 @@ ${countries[countryId].name} ${cellId}`;
             document.getElementById('countries-started').textContent = countriesStarted;
             
             // Calculate ETA (very rough estimate)
-            const totalCells = Object.keys(countries).length * 64;
-            const cellsRemaining = totalCells - totalMastered;
-            const cellsPerDay = 2; // Assuming learning 2 cells per day
-            const daysRemaining = Math.ceil(cellsRemaining / cellsPerDay);
+            const regionsPerDay = 2; // Assuming learning 2 regions per day
+            const daysRemaining = Math.ceil(totalMastered / regionsPerDay);
             
             const today = new Date();
             const etaDate = new Date(today);
@@ -841,7 +690,38 @@ ${countries[countryId].name} ${cellId}`;
             document.getElementById('eta').textContent = etaDate.toLocaleDateString();
         }
         
-        // Modify the init function to automatically load on startup
+        // Load the current country data and display it
+        async function loadCurrentCountry() {
+            try {
+                // Load the regions for the country
+                const success = await geoRegions.loadRegions(currentCountry);
+                
+                if (success) {
+                    // Create the region grid in the sidebar
+                    geoRegions.createRegionGrid(currentCountry);
+                    
+                    // Update statistics
+                    updateStats();
+                    
+                    // Reset selected region
+                    selectedRegion = null;
+                    document.getElementById('selected-cell').textContent = 'None';
+                    document.getElementById('flashcard-preview').innerHTML = `
+                        <h3>Flashcard Preview</h3>
+                        <div>
+                            <h4>No flashcard selected</h4>
+                            <p>Select a region to view or create a flashcard.</p>
+                        </div>
+                    `;
+                } else {
+                    console.error(`Failed to load regions for ${currentCountry}`);
+                }
+            } catch (error) {
+                console.error(`Error loading country ${currentCountry}:`, error);
+            }
+        }
+        
+        // Initialize the application
         async function init() {
             // Initialize empty progress
             initializeUserProgress();
@@ -877,11 +757,18 @@ ${countries[countryId].name} ${cellId}`;
                 showStatus('Successfully loaded from server!');
             } catch (error) {
                 console.error("Error auto-loading:", error);
-                showStatus('Error loading from server: ' + error.message, true);
+                showStatus('Error loading from server. Starting with empty progress.', true);
+                
+                // Despite the error, load the first country
+                await loadCurrentCountry();
             }
             
-            // Add the event listener for the Load from Obsidian button
-            document.getElementById('load-from-obsidian').textContent = 'Reload from Obsidian';
+            // Set up event listeners
+            document.getElementById('country-select').addEventListener('change', function() {
+                currentCountry = this.value;
+                loadCurrentCountry();
+            });
+            
             document.getElementById('load-from-obsidian').addEventListener('click', async function() {
                 try {
                     showStatus('Reloading from server...');
@@ -893,87 +780,64 @@ ${countries[countryId].name} ${cellId}`;
                 }
             });
             
-            // Load country select
-            const countrySelect = document.getElementById('country-select');
-            countrySelect.addEventListener('change', function() {
-                currentCountry = this.value;
-                drawCountryGrid(currentCountry);
-                createChessGrid(currentCountry);
-                updateStats();
-                selectedCell = null;
-                document.getElementById('selected-cell').textContent = 'None';
-                document.getElementById('flashcard-preview').innerHTML = `
-                    <h3>Flashcard Preview</h3>
-                    <div>
-                        <h4>No flashcard selected</h4>
-                        <p>Select a grid cell to view or create a flashcard.</p>
-                    </div>
-                `;
-            });
-            
-            // Button events
             document.getElementById('create-flashcard').addEventListener('click', async function() {
-                if (!selectedCell) {
-                    alert('Please select a grid cell first');
+                if (!selectedRegion) {
+                    alert('Please select a region first');
                     return;
                 }
                 
-                if (obsidianDirectory) {
-                    try {
-                        await createFlashcardInObsidian(selectedCell.countryId, selectedCell.cellId);
-                        alert('Flashcard created in Obsidian vault!');
-                    } catch (error) {
-                        console.error("Error creating flashcard:", error);
-                        alert("Error creating flashcard: " + error.message);
-                    }
-                } else {
-                    // Fallback to copy to clipboard
-                    const markdown = generateFlashcardMarkdown(selectedCell.countryId, selectedCell.cellId);
-                    navigator.clipboard.writeText(markdown)
-                        .then(() => alert('Flashcard markdown copied to clipboard!'))
-                        .catch(err => {
-                            console.error('Failed to copy: ', err);
-                            alert('Could not copy to clipboard. Please select and copy the text manually.');
-                        });
-                }
+                const regionId_str = `r${selectedRegion.regionId}`;
                 
-                // Mark as at least learning if untouched
-                if (userProgress[selectedCell.countryId][selectedCell.cellId] === 'untouched') {
-                    updateCellStatus('learning');
+                try {
+                    await createFlashcardInObsidian(selectedRegion.countryId, regionId_str);
+                    alert('Flashcard created in Obsidian vault!');
+                    
+                    // Mark as at least learning if untouched
+                    const currentStatus = userProgress[selectedRegion.countryId]?.[regionId_str] || 'untouched';
+                    if (currentStatus === 'untouched') {
+                        updateRegionStatus('learning');
+                    }
+                } catch (error) {
+                    console.error("Error creating flashcard:", error);
+                    alert("Error creating flashcard: " + error.message);
                 }
             });
             
             document.getElementById('mark-learning').addEventListener('click', function() {
-                if (!selectedCell) {
-                    alert('Please select a grid cell first');
+                if (!selectedRegion) {
+                    alert('Please select a region first');
                     return;
                 }
                 
-                updateCellStatus('learning');
+                updateRegionStatus('learning');
             });
             
             document.getElementById('mark-mastered').addEventListener('click', function() {
-                if (!selectedCell) {
-                    alert('Please select a grid cell first');
+                if (!selectedRegion) {
+                    alert('Please select a region first');
                     return;
                 }
                 
-                updateCellStatus('mastered');
+                updateRegionStatus('mastered');
             });
             
             document.getElementById('test-knowledge').addEventListener('click', function() {
-                if (!selectedCell) {
-                    alert('Please select a grid cell first');
+                if (!selectedRegion) {
+                    alert('Please select a region first');
                     return;
                 }
                 
-                alert(`In a full implementation, this would launch a test mode for ${countries[selectedCell.countryId].name} ${selectedCell.cellId}`);
+                alert(`In a full implementation, this would launch a test mode for ${countries[selectedRegion.countryId].name} Region ${selectedRegion.regionId}`);
             });
             
-            // Initial load
-            drawCountryGrid(currentCountry);
-            createChessGrid(currentCountry);
-            updateStats();
+            // Make the updateFlashcardPreview function global
+            window.updateFlashcardPreview = updateFlashcardPreview;
+            
+            // Make the userProgress object global
+            window.userProgress = userProgress;
+            
+            // Make the updateStats function global
+            window.updateStats = updateStats;
         }
         
         // Start the application
