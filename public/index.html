@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geoguessr Chess Grid Training System</title>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 300px;
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        #map {
+            flex: 1;
+            background-color: #eee;
+        }
+        .controls {
+            padding: 15px;
+            background-color: #34495e;
+            color: white;
+        }
+        h1, h2, h3 {
+            margin-top: 0;
+        }
+        select, button {
+            padding: 8px 12px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border: none;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .progress-container {
+            margin-top: 20px;
+        }
+        .grid-cell {
+            width: 30px;
+            height: 30px;
+            display: inline-block;
+            border: 1px solid #555;
+            margin: 2px;
+            text-align: center;
+            line-height: 30px;
+            cursor: pointer;
+            background-color: #ecf0f1;
+            color: #333;
+            font-size: 12px;
+        }
+        .grid-cell.mastered {
+            background-color: #27ae60;
+            color: white;
+        }
+        .grid-cell.learning {
+            background-color: #f39c12;
+            color: white;
+        }
+        .grid-cell.untouched {
+            background-color: #ecf0f1;
+        }
+        .grid-row {
+            display: flex;
+            justify-content: center;
+        }
+        .flashcard-preview {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            color: #333;
+        }
+        .flashcard-preview pre {
+            white-space: pre-wrap;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .chess-grid {
+            margin-top: 15px;
+        }
+        .stats {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #34495e;
+            border-radius: 5px;
+        }
+        .region-label {
+            font-size: 10px;
+            color: white;
+            background-color: rgba(0,0,0,0.7);
+            padding: 2px 4px;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .selected-cell {
+            border: 3px solid #e74c3c !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Geoguessr Trainer</h2>
+            <div>
+                <label for="country-select">Select Country:</label>
+                <select id="country-select">
+                    <option value="russia">Russia</option>
+                    <option value="usa">United States</option>
+                    <option value="canada">Canada</option>
+                    <option value="mexico">Mexico</option>
+                    <option value="brazil">Brazil</option>
+                    <option value="argentina">Argentina</option>
+                    <option value="chile">Chile</option>
+                    <option value="peru">Peru</option>
+                    <option value="australia">Australia</option>
+                    <option value="japan">Japan</option>
+                    <option value="mongolia">Mongolia</option>
+                    <option value="kazakhstan">Kazakhstan</option>
+                    <option value="germany">Germany</option>
+                    <option value="poland">Poland</option>
+                    <option value="ukraine">Ukraine</option>
+                    <option value="southafrica">South Africa</option>
+                    <option value="france">France</option>
+                    <option value="spain">Spain</option>
+                    <option value="india">India</option>
+                    <option value="indonesia">Indonesia</option>
+                </select>
+            </div>
+            
+            <div class="progress-container">
+                <h3>Learning Progress</h3>
+                <div>Mastered: <span id="mastered-count">0</span>/64</div>
+                <div>Learning: <span id="learning-count">0</span>/64</div>
+                <div>Untouched: <span id="untouched-count">64</span>/64</div>
+            </div>
+            
+            <div class="chess-grid">
+                <h3>Grid Cells</h3>
+                <div id="grid-container"></div>
+            </div>
+            
+            <div class="stats">
+                <h3>Statistics</h3>
+                <div>Countries started: <span id="countries-started">0</span>/20</div>
+                <div>Total cells mastered: <span id="total-mastered">0</span>/1280</div>
+                <div>Estimated Champion ETA: <span id="eta">--</span></div>
+            </div>
+        </div>
+        
+        <div class="main">
+            <div id="map"></div>
+            
+            <div class="controls">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span>Selected: </span>
+                        <span id="selected-cell">None</span>
+                    </div>
+                    <div>
+                        <button id="load-from-obsidian">Load from Obsidian</button>
+                        <button id="create-flashcard">Create/View Flashcard</button>
+                        <button id="mark-learning">Mark as Learning</button>
+                        <button id="mark-mastered">Mark as Mastered</button>
+                        <button id="test-knowledge">Test Knowledge</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flashcard-preview" id="flashcard-preview">
+                <h3>Flashcard Preview</h3>
+                <div>
+                    <h4>No flashcard selected</h4>
+                    <p>Select a grid cell to view or create a flashcard.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize the map
+        const map = L.map('map').setView([20, 0], 2);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        // Country boundaries and their bounding boxes
+        const countries = {
+            russia: {
+                name: "Russia",
+                bounds: [[41.2, 19.6], [69.5, 179.9]],
+                coverage: 0.85
+            },
+            usa: {
+                name: "United States",
+                bounds: [[24.5, -125.0], [49.4, -66.9]],
+                coverage: 0.95
+            },
+            canada: {
+                name: "Canada",
+                bounds: [[41.7, -141.0], [69.7, -52.6]],
+                coverage: 0.80
+            },
+            mexico: {
+                name: "Mexico",
+                bounds: [[14.5, -118.4], [32.7, -86.7]],
+                coverage: 0.85
+            },
+            brazil: {
+                name: "Brazil",
+                bounds: [[-33.7, -73.9], [5.3, -34.7]],
+                coverage: 0.75
+            },
+            argentina: {
+                name: "Argentina",
+                bounds: [[-55.0, -73.6], [-21.8, -53.6]],
+                coverage: 0.75
+            },
+            chile: {
+                name: "Chile",
+                bounds: [[-55.9, -75.6], [-17.5, -66.0]],
+                coverage: 0.70
+            },
+            peru: {
+                name: "Peru",
+                bounds: [[-18.4, -81.3], [-0.0, -68.7]],
+                coverage: 0.65
+            },
+            australia: {
+                name: "Australia",
+                bounds: [[-43.6, 112.9], [-10.6, 154.0]],
+                coverage: 0.90
+            },
+            japan: {
+                name: "Japan",
+                bounds: [[30.9, 129.5], [45.5, 145.8]],
+                coverage: 0.98
+            },
+            mongolia: {
+                name: "Mongolia",
+                bounds: [[41.5, 87.8], [52.1, 119.9]],
+                coverage: 0.60
+            },
+            kazakhstan: {
+                name: "Kazakhstan",
+                bounds: [[40.6, 46.5], [55.4, 87.3]],
+                coverage: 0.65
+            },
+            germany: {
+                name: "Germany",
+                bounds: [[47.3, 5.9], [55.1, 15.0]],
+                coverage: 0.98
+            },
+            poland: {
+                name: "Poland",
+                bounds: [[49.0, 14.1], [54.9, 24.2]],
+                coverage: 0.95
+            },
+            ukraine: {
+                name: "Ukraine",
+                bounds: [[44.4, 22.2], [52.4, 40.2]],
+                coverage: 0.85
+            },
+            southafrica: {
+                name: "South Africa",
+                bounds: [[-34.8, 16.5], [-22.1, 32.9]],
+                coverage: 0.80
+            },
+            france: {
+                name: "France",
+                bounds: [[41.3, -5.1], [51.1, 9.6]],
+                coverage: 0.98
+            },
+            spain: {
+                name: "Spain",
+                bounds: [[36.0, -9.4], [43.8, 3.4]],
+                coverage: 0.92
+            },
+            india: {
+                name: "India",
+                bounds: [[6.7, 68.1], [35.5, 97.4]],
+                coverage: 0.85
+            },
+            indonesia: {
+                name: "Indonesia",
+                bounds: [[-11.0, 95.0], [6.2, 141.0]],
+                coverage: 0.70
+            }
+        };
+        
+        // Store user progress
+        let userProgress = {};
+        let obsidianDirectory = null;
+        
+        // Initialize user progress for all countries
+        function initializeUserProgress() {
+            Object.keys(countries).forEach(country => {
+                userProgress[country] = {};
+                for (let i = 0; i < 8; i++) {
+                    const row = String.fromCharCode(65 + i);
+                    for (let j = 1; j <= 8; j++) {
+                        userProgress[country][`${row}${j}`] = 'untouched';
+                    }
+                }
+            });
+        }
+        
+        // Current selected country and cell
+        let currentCountry = 'russia';
+        let selectedCell = null;
+        
+        // Draw grid for a country
+        function drawCountryGrid(countryId) {
+            // Clear any existing grid
+            if (window.gridLayer) {
+                map.removeLayer(window.gridLayer);
+            }
+            
+            const country = countries[countryId];
+            const bounds = country.bounds;
+            
+            // Fit map to country bounds
+            map.fitBounds(bounds);
+            
+            // Create a feature group for the grid
+            window.gridLayer = L.featureGroup().addTo(map);
+            
+            // Calculate grid cell sizes
+            const latDiff = bounds[1][0] - bounds[0][0];
+            const lngDiff = bounds[1][1] - bounds[0][1];
+            const latStep = latDiff / 8;
+            const lngStep = lngDiff / 8;
+            
+            // Draw the grid
+            for (let i = 0; i < 8; i++) {
+                const row = String.fromCharCode(65 + i);
+                
+                for (let j = 0; j < 8; j++) {
+                    const col = j + 1;
+                    const cellId = `${row}${col}`;
+                    
+                    // Calculate bounds for this cell - REVERSED to have A1 at bottom
+                    const cellBounds = [
+                        [bounds[0][0] + latStep * i, bounds[0][1] + lngStep * j],
+                        [bounds[0][0] + latStep * (i + 1), bounds[0][1] + lngStep * (j + 1)]
+                    ];
+                    
+                    // Create rectangle for the cell
+                    const cellStatus = userProgress[countryId][cellId];
+                    let fillColor;
+                    
+                    switch (cellStatus) {
+                        case 'mastered':
+                            fillColor = '#27ae60';
+                            break;
+                        case 'learning':
+                            fillColor = '#f39c12';
+                            break;
+                        default:
+                            fillColor = '#ecf0f1';
+                    }
+                    
+                    const rectangle = L.rectangle(cellBounds, {
+                        color: '#333',
+                        weight: 1,
+                        fillColor: fillColor,
+                        fillOpacity: 0.4
+                    }).addTo(window.gridLayer);
+                    
+                    // Add a label to the center of the cell
+                    const center = [
+                        (cellBounds[0][0] + cellBounds[1][0]) / 2,
+                        (cellBounds[0][1] + cellBounds[1][1]) / 2
+                    ];
+                    
+                    const label = L.divIcon({
+                        className: 'region-label',
+                        html: cellId,
+                        iconSize: [20, 10]
+                    });
+                    
+                    L.marker(center, {
+                        icon: label
+                    }).addTo(window.gridLayer);
+                    
+                    // Store cell data and add click event
+                    rectangle.cellId = cellId;
+                    rectangle.countryId = countryId;
+                    rectangle.on('click', function(e) {
+                        selectCell(this.countryId, this.cellId);
+                    });
+                }
+            }
+        }
+        
+        // Create chess-like grid in sidebar
+        function createChessGrid(countryId) {
+            const gridContainer = document.getElementById('grid-container');
+            gridContainer.innerHTML = '';
+            
+            // Create grid from bottom to top (A1 at bottom)
+            for (let i = 7; i >= 0; i--) {
+                const row = String.fromCharCode(65 + i);
+                const gridRow = document.createElement('div');
+                gridRow.className = 'grid-row';
+                
+                for (let j = 1; j <= 8; j++) {
+                    const cellId = `${row}${j}`;
+                    const cell = document.createElement('div');
+                    cell.className = 'grid-cell';
+                    cell.textContent = cellId;
+                    cell.dataset.cellId = cellId;
+                    cell.dataset.countryId = countryId;
+                    
+                    // Add status class
+                    const status = userProgress[countryId][cellId];
+                    cell.classList.add(status);
+                    
+                    // Add click event
+                    cell.addEventListener('click', function() {
+                        selectCell(this.dataset.countryId, this.dataset.cellId);
+                    });
+                    
+                    gridRow.appendChild(cell);
+                }
+                
+                gridContainer.appendChild(gridRow);
+            }
+        }
+        
+        // Select a cell
+        function selectCell(countryId, cellId) {
+            // Update selected cell
+            selectedCell = { countryId, cellId };
+            
+            // Update UI to show selection
+            document.querySelectorAll('.grid-cell').forEach(cell => {
+                cell.classList.remove('selected-cell');
+            });
+            
+            const cell = document.querySelector(`.grid-cell[data-cell-id="${cellId}"][data-country-id="${countryId}"]`);
+            if (cell) {
+                cell.classList.add('selected-cell');
+            }
+            
+            document.getElementById('selected-cell').textContent = `${countries[countryId].name} ${cellId}`;
+            
+            // Show flashcard preview
+            updateFlashcardPreview(countryId, cellId);
+        }
+        
+        // Generate flashcard markdown content without SR comment
+        function generateFlashcardMarkdown(countryId, cellId) {
+            // Replace spaces with hyphens in tags
+            const countryTag = countries[countryId].name.replace(/\s+/g, '-').toLowerCase();
+            
+            return `#flash-geo/regions/${countryTag}/${cellId}
+![Screenshot of the region]
+?
+${countries[countryId].name} ${cellId}`;
+        }
+        
+        // Update flashcard preview
+        function updateFlashcardPreview(countryId, cellId) {
+            const status = userProgress[countryId][cellId];
+            const container = document.getElementById('flashcard-preview');
+            
+            let content = `<h3>Flashcard for ${countries[countryId].name} ${cellId}</h3>`;
+            
+            // Generate markdown with status
+            let markdown = generateFlashcardMarkdown(countryId, cellId);
+            if (status !== 'untouched') {
+                markdown = updateMarkdownWithStatus(markdown, status);
+            }
+            
+            if (status === 'untouched') {
+                content += `
+                <p>This region is untouched. Create a flashcard to start learning it.</p>
+                <pre>${markdown}</pre>
+                <p><strong>Instructions:</strong> Copy this template, add screenshots from Google Street View, and save to Obsidian.</p>`;
+            } else {
+                content += `
+                <p>Status: <strong>${status.charAt(0).toUpperCase() + status.slice(1)}</strong></p>
+                <pre>${markdown}</pre>
+                <p><strong>Instructions:</strong> Add more screenshots or notes as you continue to learn this region.</p>`;
+            }
+            
+            container.innerHTML = content;
+        }
+        
+        // Mark cell as learning or mastered
+        function updateCellStatus(status) {
+            if (!selectedCell) return;
+            
+            const { countryId, cellId } = selectedCell;
+            const oldStatus = userProgress[countryId][cellId];
+            userProgress[countryId][cellId] = status;
+            
+            // Update UI
+            document.querySelectorAll(`.grid-cell[data-cell-id="${cellId}"][data-country-id="${countryId}"]`).forEach(cell => {
+                cell.className = `grid-cell ${status}`;
+                if (selectedCell.cellId === cellId) {
+                    cell.classList.add('selected-cell');
+                }
+            });
+            
+            // Update grid on map
+            drawCountryGrid(countryId);
+            
+            // Update statistics
+            updateStats();
+            
+            // Update the markdown file if we have access to Obsidian
+            if (obsidianDirectory && oldStatus !== status) {
+                updateFlashcardStatus(countryId, cellId, status)
+                    .then(() => {
+                        console.log(`Updated flashcard status to ${status}`);
+                        // Update the flashcard preview
+                        updateFlashcardPreview(countryId, cellId);
+                    })
+                    .catch(error => {
+                        console.error("Error updating flashcard:", error);
+                        // Don't show alert to avoid disrupting the user experience
+                    });
+            }
+        }
+        
+        // Add a new function to update the flashcard status in the markdown file
+        async function updateFlashcardStatus(countryId, cellId, status) {
+            try {
+                // Get the country directory name
+                const countryName = countries[countryId].name;
+                const countryDirName = countryName.replace(/\s+/g, '-').toLowerCase();
+                
+                // Generate markdown with status
+                let markdown = generateFlashcardMarkdown(countryId, cellId);
+                markdown = updateMarkdownWithStatus(markdown, status);
+                
+                // Send to server
+                const response = await fetch('http://localhost:3001/api/flashcard', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        countryId: countryDirName,
+                        cellId: cellId,
+                        content: markdown,
+                        status: status
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`Server error: ${errorData.error}`);
+                }
+                
+                return true;
+            } catch (error) {
+                console.error("Error updating flashcard status:", error);
+                throw error;
+            }
+        }
+        
+        // Function to update markdown content with status tags
+        function updateMarkdownWithStatus(content, status) {
+            // Remove existing status tags
+            content = content.replace(/#status\/learning\b/g, '');
+            content = content.replace(/#status\/mastered\b/g, '');
+            
+            // Add the new status tag if not untouched
+            if (status !== 'untouched') {
+                // Find the first line with tags
+                const lines = content.split('\n');
+                let tagLineIndex = -1;
+                
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].includes('#flash-geo')) {
+                        tagLineIndex = i;
+                        break;
+                    }
+                }
+                
+                if (tagLineIndex >= 0) {
+                    // Add the status tag to the existing tag line
+                    lines[tagLineIndex] = `${lines[tagLineIndex]} #status/${status}`;
+                    content = lines.join('\n');
+                } else {
+                    // If no tag line found, add it at the beginning
+                    content = `#status/${status}\n${content}`;
+                }
+            }
+            
+            return content;
+        }
+        
+        // Update the createFlashcardInObsidian function to include status
+        async function createFlashcardInObsidian(countryId, cellId, status = null) {
+            try {
+                // Generate markdown with status if provided
+                let markdown = generateFlashcardMarkdown(countryId, cellId);
+                
+                // Add status tag if provided
+                if (status && status !== 'untouched') {
+                    markdown = updateMarkdownWithStatus(markdown, status);
+                }
+                
+                // Get the country directory name
+                const countryName = countries[countryId].name;
+                const countryDirName = countryName.replace(/\s+/g, '-').toLowerCase();
+                
+                // Send to server
+                const response = await fetch('http://localhost:3001/api/flashcard', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        countryId: countryDirName,
+                        cellId: cellId,
+                        content: markdown,
+                        status: status
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`Server error: ${errorData.error}`);
+                }
+                
+                return true;
+            } catch (error) {
+                console.error("Error creating flashcard:", error);
+                throw error;
+            }
+        }
+        
+        // Store the directory handle in IndexedDB
+        async function storeDirectoryHandle(handle) {
+            try {
+                // Open (or create) the database
+                const db = await openDatabase();
+                
+                // Store the handle
+                const tx = db.transaction('directoryHandles', 'readwrite');
+                await tx.objectStore('directoryHandles').put(handle, 'obsidianDir');
+                await tx.done;
+                
+                console.log('Directory handle stored successfully');
+                return true;
+            } catch (error) {
+                console.error('Failed to store directory handle:', error);
+                return false;
+            }
+        }
+        
+        // Retrieve the directory handle from IndexedDB
+        async function getStoredDirectoryHandle() {
+            try {
+                // Open the database
+                const db = await openDatabase();
+                
+                // Get the handle
+                const tx = db.transaction('directoryHandles', 'readonly');
+                const handle = await tx.objectStore('directoryHandles').get('obsidianDir');
+                await tx.done;
+                
+                if (handle) {
+                    // Verify the handle is still valid and permission is granted
+                    if ((await handle.requestPermission({ mode: 'readwrite' })) === 'granted') {
+                        console.log('Retrieved stored directory handle');
+                        return handle;
+                    } else {
+                        console.log('Permission not granted for stored handle');
+                        return null;
+                    }
+                } else {
+                    console.log('No stored directory handle found');
+                    return null;
+                }
+            } catch (error) {
+                console.error('Failed to retrieve directory handle:', error);
+                return null;
+            }
+        }
+        
+        // Open the IndexedDB database
+        function openDatabase() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open('GeoguessrTrainer', 1);
+                
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains('directoryHandles')) {
+                        db.createObjectStore('directoryHandles');
+                    }
+                };
+                
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+        
+        // Modify the loadFromObsidian function to try using the stored handle first
+        async function loadFromObsidian() {
+            try {
+                // Fetch progress from the server
+                const response = await fetch('http://localhost:3001/api/progress');
+                if (!response.ok) {
+                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                }
+                
+                const serverProgress = await response.json();
+                
+                // Reset progress before loading
+                initializeUserProgress();
+                
+                // Apply the server progress to our local state
+                Object.keys(serverProgress).forEach(countryDirName => {
+                    // Find the matching country ID
+                    let countryId = null;
+                    for (const [id, country] of Object.entries(countries)) {
+                        const normalizedDirName = countryDirName.replace(/-/g, ' ').toLowerCase();
+                        const normalizedCountryName = country.name.toLowerCase();
+                        if (normalizedCountryName === normalizedDirName) {
+                            countryId = id;
+                            break;
+                        }
+                    }
+                    
+                    if (countryId) {
+                        // Apply cell statuses
+                        Object.keys(serverProgress[countryDirName]).forEach(cellId => {
+                            if (userProgress[countryId][cellId]) {
+                                userProgress[countryId][cellId] = serverProgress[countryDirName][cellId];
+                            }
+                        });
+                    }
+                });
+                
+                // Update UI with loaded progress
+                drawCountryGrid(currentCountry);
+                createChessGrid(currentCountry);
+                updateStats();
+                
+                alert('Successfully loaded progress from Obsidian vault!');
+                return true;
+            } catch (error) {
+                console.error("Error loading from server:", error);
+                alert("Error loading from server: " + error.message);
+                throw error;
+            }
+        }
+        
+        // Update statistics
+        function updateStats() {
+            if (!currentCountry) return;
+            
+            // Count by status for current country
+            let mastered = 0;
+            let learning = 0;
+            let untouched = 0;
+            
+            Object.keys(userProgress[currentCountry]).forEach(cellId => {
+                const status = userProgress[currentCountry][cellId];
+                if (status === 'mastered') mastered++;
+                else if (status === 'learning') learning++;
+                else untouched++;
+            });
+            
+            document.getElementById('mastered-count').textContent = mastered;
+            document.getElementById('learning-count').textContent = learning;
+            document.getElementById('untouched-count').textContent = untouched;
+            
+            // Count total stats
+            let totalMastered = 0;
+            let countriesStarted = 0;
+            
+            Object.keys(userProgress).forEach(country => {
+                let countryHasProgress = false;
+                
+                Object.keys(userProgress[country]).forEach(cellId => {
+                    if (userProgress[country][cellId] === 'mastered') {
+                        totalMastered++;
+                        countryHasProgress = true;
+                    } else if (userProgress[country][cellId] === 'learning') {
+                        countryHasProgress = true;
+                    }
+                });
+                
+                if (countryHasProgress) {
+                    countriesStarted++;
+                }
+            });
+            
+            document.getElementById('total-mastered').textContent = totalMastered;
+            document.getElementById('countries-started').textContent = countriesStarted;
+            
+            // Calculate ETA (very rough estimate)
+            const totalCells = Object.keys(countries).length * 64;
+            const cellsRemaining = totalCells - totalMastered;
+            const cellsPerDay = 2; // Assuming learning 2 cells per day
+            const daysRemaining = Math.ceil(cellsRemaining / cellsPerDay);
+            
+            const today = new Date();
+            const etaDate = new Date(today);
+            etaDate.setDate(today.getDate() + daysRemaining);
+            
+            document.getElementById('eta').textContent = etaDate.toLocaleDateString();
+        }
+        
+        // Modify the init function to automatically load on startup
+        async function init() {
+            // Initialize empty progress
+            initializeUserProgress();
+            
+            // Add a status message to the UI
+            const statusMessage = document.createElement('div');
+            statusMessage.id = 'status-message';
+            statusMessage.style.position = 'fixed';
+            statusMessage.style.top = '10px';
+            statusMessage.style.right = '10px';
+            statusMessage.style.padding = '10px';
+            statusMessage.style.backgroundColor = '#3498db';
+            statusMessage.style.color = 'white';
+            statusMessage.style.borderRadius = '5px';
+            statusMessage.style.zIndex = '1000';
+            statusMessage.style.display = 'none';
+            document.body.appendChild(statusMessage);
+            
+            // Function to show status messages
+            function showStatus(message, isError = false) {
+                statusMessage.textContent = message;
+                statusMessage.style.backgroundColor = isError ? '#e74c3c' : '#3498db';
+                statusMessage.style.display = 'block';
+                setTimeout(() => {
+                    statusMessage.style.display = 'none';
+                }, 5000);
+            }
+            
+            // Try to load from server automatically
+            try {
+                showStatus('Loading from server...');
+                await loadFromObsidian();
+                showStatus('Successfully loaded from server!');
+            } catch (error) {
+                console.error("Error auto-loading:", error);
+                showStatus('Error loading from server: ' + error.message, true);
+            }
+            
+            // Add the event listener for the Load from Obsidian button
+            document.getElementById('load-from-obsidian').textContent = 'Reload from Obsidian';
+            document.getElementById('load-from-obsidian').addEventListener('click', async function() {
+                try {
+                    showStatus('Reloading from server...');
+                    await loadFromObsidian();
+                    showStatus('Successfully reloaded from server!');
+                } catch (error) {
+                    console.error("Error loading from Obsidian:", error);
+                    showStatus('Error reloading from server: ' + error.message, true);
+                }
+            });
+            
+            // Load country select
+            const countrySelect = document.getElementById('country-select');
+            countrySelect.addEventListener('change', function() {
+                currentCountry = this.value;
+                drawCountryGrid(currentCountry);
+                createChessGrid(currentCountry);
+                updateStats();
+                selectedCell = null;
+                document.getElementById('selected-cell').textContent = 'None';
+                document.getElementById('flashcard-preview').innerHTML = `
+                    <h3>Flashcard Preview</h3>
+                    <div>
+                        <h4>No flashcard selected</h4>
+                        <p>Select a grid cell to view or create a flashcard.</p>
+                    </div>
+                `;
+            });
+            
+            // Button events
+            document.getElementById('create-flashcard').addEventListener('click', async function() {
+                if (!selectedCell) {
+                    alert('Please select a grid cell first');
+                    return;
+                }
+                
+                if (obsidianDirectory) {
+                    try {
+                        await createFlashcardInObsidian(selectedCell.countryId, selectedCell.cellId);
+                        alert('Flashcard created in Obsidian vault!');
+                    } catch (error) {
+                        console.error("Error creating flashcard:", error);
+                        alert("Error creating flashcard: " + error.message);
+                    }
+                } else {
+                    // Fallback to copy to clipboard
+                    const markdown = generateFlashcardMarkdown(selectedCell.countryId, selectedCell.cellId);
+                    navigator.clipboard.writeText(markdown)
+                        .then(() => alert('Flashcard markdown copied to clipboard!'))
+                        .catch(err => {
+                            console.error('Failed to copy: ', err);
+                            alert('Could not copy to clipboard. Please select and copy the text manually.');
+                        });
+                }
+                
+                // Mark as at least learning if untouched
+                if (userProgress[selectedCell.countryId][selectedCell.cellId] === 'untouched') {
+                    updateCellStatus('learning');
+                }
+            });
+            
+            document.getElementById('mark-learning').addEventListener('click', function() {
+                if (!selectedCell) {
+                    alert('Please select a grid cell first');
+                    return;
+                }
+                
+                updateCellStatus('learning');
+            });
+            
+            document.getElementById('mark-mastered').addEventListener('click', function() {
+                if (!selectedCell) {
+                    alert('Please select a grid cell first');
+                    return;
+                }
+                
+                updateCellStatus('mastered');
+            });
+            
+            document.getElementById('test-knowledge').addEventListener('click', function() {
+                if (!selectedCell) {
+                    alert('Please select a grid cell first');
+                    return;
+                }
+                
+                alert(`In a full implementation, this would launch a test mode for ${countries[selectedCell.countryId].name} ${selectedCell.cellId}`);
+            });
+            
+            // Initial load
+            drawCountryGrid(currentCountry);
+            createChessGrid(currentCountry);
+            updateStats();
+        }
+        
+        // Start the application
+        window.onload = init;
+    </script>
+</body>
+</html>
