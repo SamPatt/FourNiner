@@ -131,6 +131,10 @@ class GeoRegions {
       style.weight = 4;
       style.color = '#e74c3c';
       style.fillOpacity = 0; // Remove fill for selected region
+    } else if (this.selectedRegion && 
+               this.selectedRegion.countryId === countryId) {
+      // For other regions in the same country, reduce fillOpacity
+      style.fillOpacity = 0.1;
     }
     
     return style;
@@ -149,6 +153,9 @@ class GeoRegions {
       countryId,
       regionId
     };
+    
+    // Set this flag to ensure overlays remain disabled while a region is selected
+    window.regionSelected = true;
     
     // Update the UI
     const regionId_str = `r${regionId}`;
@@ -223,11 +230,13 @@ class GeoRegions {
       collapseBtn.className = 'collapse-btn';
       collapseBtn.onclick = () => {
         const content = document.getElementById('region-info-content');
-        if (content.style.display === 'none') {
+        if (infoSidebar.classList.contains('collapsed')) {
+          // Expand
           content.style.display = 'block';
           infoSidebar.classList.remove('collapsed');
           collapseBtn.innerHTML = '&times;';
         } else {
+          // Collapse
           content.style.display = 'none';
           infoSidebar.classList.add('collapsed');
           collapseBtn.innerHTML = '&#9776;'; // Hamburger icon
@@ -249,6 +258,17 @@ class GeoRegions {
       // Add to map container
       document.querySelector('.main').appendChild(infoSidebar);
       
+      // Make the entire sidebar clickable when collapsed
+      infoSidebar.addEventListener('click', (e) => {
+        if (infoSidebar.classList.contains('collapsed') && !e.target.classList.contains('collapse-btn')) {
+          // Expand when clicking anywhere on the collapsed sidebar
+          const content = document.getElementById('region-info-content');
+          content.style.display = 'block';
+          infoSidebar.classList.remove('collapsed');
+          collapseBtn.innerHTML = '&times;';
+        }
+      });
+      
       // Add CSS for the sidebar
       const style = document.createElement('style');
       style.textContent = `
@@ -268,7 +288,11 @@ class GeoRegions {
         .region-info-sidebar.collapsed {
           width: 40px;
           height: 40px;
-          overflow: hidden;
+          overflow: visible;
+          cursor: pointer;
+        }
+        .region-info-sidebar.collapsed .info-header h3 {
+          display: none;
         }
         .info-header {
           padding: 10px;
@@ -357,13 +381,7 @@ class GeoRegions {
       }
     }
     
-    // Number of points
-    html += `
-      <div class="info-row">
-        <div class="info-label">Coverage Points:</div>
-        <div class="info-value">${props.pointCount}</div>
-      </div>
-    `;
+    // Removed points section as requested
     
     // Year tags if available
     if (props.yearTags && props.yearTags.length > 0) {

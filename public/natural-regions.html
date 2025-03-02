@@ -462,12 +462,17 @@
                         // Check if data is available for this country
                         const hasData = countryMatch !== null;
                         
+                        // Store country selection state
+                        const selectedCountry = window.selectedCountry || currentCountry;
+                        const isCountrySelected = selectedCountry && countryMatch === selectedCountry;
+                        
                         return {
                             fillColor: hasData ? '#3498db' : '#95a5a6',
                             weight: hasData ? 2 : 1,
                             opacity: 1,
                             color: hasData ? '#2980b9' : '#7f8c8d',
-                            fillOpacity: hasData ? 0.4 : 0.1,
+                            // Hide fill for selected country or if a region is selected within this country
+                            fillOpacity: (hasData && (isCountrySelected || (window.regionSelected && countryMatch === selectedCountry))) ? 0 : (hasData ? 0.4 : 0.1),
                             dashArray: hasData ? null : '3',
                             interactive: hasData
                         };
@@ -493,27 +498,37 @@
                         if (hasData) {
                             // Add hover effects
                             layer.on('mouseover', function (e) {
-                                layer.setStyle({
-                                    weight: 3,
-                                    color: '#1abc9c',
-                                    fillOpacity: 0.7
-                                });
-                                
-                                // Bring to front to prevent border clipping
-                                if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
-                                    layer.bringToFront();
+                                // Only apply hover style if no region is selected or if the country isn't selected
+                                if (!window.regionSelected || countryMatch !== window.selectedCountry) {
+                                    layer.setStyle({
+                                        weight: 3,
+                                        color: '#1abc9c',
+                                        fillOpacity: 0.7
+                                    });
+                                    
+                                    // Bring to front to prevent border clipping
+                                    if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                                        layer.bringToFront();
+                                    }
                                 }
                             });
                             
                             layer.on('mouseout', function (e) {
-                                countryPolygonsLayer.resetStyle(layer);
+                                // Only reset style if no region is selected or if the country isn't selected
+                                if (!window.regionSelected || countryMatch !== window.selectedCountry) {
+                                    countryPolygonsLayer.resetStyle(layer);
+                                }
                             });
                             
                             // Add click handler
                             layer.on('click', () => {
+                                // Reset region selected flag when a new country is selected
+                                window.regionSelected = false;
+                                
                                 // Update dropdown and load country
                                 document.getElementById('country-select').value = countryMatch;
                                 currentCountry = countryMatch;
+                                window.selectedCountry = countryMatch; // Store selected country globally
                                 loadCurrentCountry();
                             });
                         }
@@ -860,6 +875,9 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
         // Load the current country data and display it
         async function loadCurrentCountry() {
             try {
+                // Reset selected region when loading a new country
+                window.selectedRegion = null;
+                
                 // Load the regions for the country
                 const success = await geoRegions.loadRegions(currentCountry);
                 
@@ -895,6 +913,12 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
         async function init() {
             // Initialize empty progress
             initializeUserProgress();
+            
+            // Initialize global selected country
+            window.selectedCountry = 'russia';
+            
+            // Initialize region selected flag to false
+            window.regionSelected = false;
             
             // Add a status message to the UI
             const statusMessage = document.createElement('div');
@@ -938,7 +962,11 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
             
             // Set up event listeners
             document.getElementById('country-select').addEventListener('change', function() {
+                // Reset region selected flag when a new country is selected
+                window.regionSelected = false;
+                
                 currentCountry = this.value;
+                window.selectedCountry = this.value; // Store selected country globally
                 loadCurrentCountry();
             });
             
