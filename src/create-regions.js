@@ -55,8 +55,9 @@ async function main() {
   // Parse options
   let regions = 32;
   let koppenResolution = '0p5';
-  let useKoppen = false;
+  let useKoppen = true; // Enable Köppen climate data by default
   let useYears = false;
+  let noKoppen = false; // New flag to disable Köppen
   
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--regions' && i + 1 < args.length) {
@@ -68,6 +69,9 @@ async function main() {
       i++;
     } else if (args[i] === '--use-years') {
       useYears = true;
+    } else if (args[i] === '--no-koppen') {
+      noKoppen = true;
+      useKoppen = false;
     }
   }
   
@@ -106,15 +110,22 @@ Arguments:
 
 Options:
   --regions <number>     Number of regions to create (default: 32)
-  --koppen <resolution>  Use Köppen climate data at specified resolution
+                         Values between 20-64 recommended depending on country size
+  --koppen <resolution>  Set Köppen climate data resolution (default: 0p5)
                          (0p00833333, 0p1, 0p5, 1p0)
+  --no-koppen           Disable Köppen climate data (uses proximity clustering only)
   --use-years           Consider the year data in clustering
   --help                Show this help message
 
+The new algorithm prioritizes creating regions based on Köppen-Geiger climate zones.
+Each climate zone will have 1 or more regions depending on its size and road coverage.
+This ensures regions correspond to natural geographical features and similar climate patterns.
+
 Examples:
-  node create-regions.js russia
+  node create-regions.js peru
   node create-regions.js usa --regions 48
-  node create-regions.js france --koppen 0p5 --use-years
+  node create-regions.js france --koppen 0p1
+  node create-regions.js japan --no-koppen --use-years
   `);
 }
 

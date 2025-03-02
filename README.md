@@ -107,22 +107,37 @@ Country Name A1
 
 ### Köppen Climate Data Integration
 
-The application can use Köppen-Geiger climate classification data to create more meaningful regions:
+The application now uses Köppen-Geiger climate classification data by default to create more meaningful natural regions:
 
 1. The `map_data` directory contains Köppen-Geiger data at different resolutions:
    - `koppen_geiger_0p00833333.tif` (highest resolution)
    - `koppen_geiger_0p1.tif`
-   - `koppen_geiger_0p5.tif` (recommended)
+   - `koppen_geiger_0p5.tif` (default)
    - `koppen_geiger_1p0.tif` (lowest resolution)
 
-2. When generating regions, include the `--koppen` flag:
+2. When generating regions:
    ```
-   node src/create-regions.js russia --koppen 0p5
+   node src/create-regions.js peru
+   ```
+   
+   This will automatically create regions based on climate zones and road coverage. Each climate zone will be divided into one or more regions depending on the size and road coverage density.
+
+3. To customize the climate resolution:
+   ```
+   node src/create-regions.js russia --koppen 0p1
    ```
 
-3. This will create regions that respect climate boundaries, making them more geographically meaningful.
+4. To disable climate-based regions and use only proximity-based clustering:
+   ```
+   node src/create-regions.js france --no-koppen
+   ```
 
-> Note: The Köppen data support requires GDAL to be installed on your system. If not available, the regions will still be generated but without climate data integration.
+5. The number of regions will vary based on the climate diversity of the country:
+   ```
+   node src/create-regions.js usa --regions 48
+   ```
+
+> Note: For optimal results, GDAL should be installed on your system. If GDAL is not available, the application will automatically use a simulated Köppen climate model based on latitude and longitude. While not as accurate as the real climate data, this simulation still allows for climate-based region creation without external dependencies.
 
 ## Troubleshooting
 

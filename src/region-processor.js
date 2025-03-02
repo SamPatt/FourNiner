@@ -54,12 +54,28 @@ async function processCountryData(countryId, targetRegions = 32, options = {}) {
     // Perform clustering to create natural regions
     const regions = await createRegions(points, targetRegions, opts);
     
+    // Add metadata about the country and generation options
+    const regionsWithMetadata = {
+      ...regions,
+      metadata: {
+        country: countryId,
+        targetRegions,
+        actualRegions: regions.features.length,
+        generatedAt: new Date().toISOString(),
+        options: {
+          useKoppen: opts.useKoppen,
+          koppenResolution: opts.koppenResolution,
+          useYearData: opts.useYearData
+        }
+      }
+    };
+    
     // Save the processed regions
     const outputPath = path.join(__dirname, '..', 'map_data', `${countryId}_regions.json`);
-    fs.writeFileSync(outputPath, JSON.stringify(regions, null, 2));
+    fs.writeFileSync(outputPath, JSON.stringify(regionsWithMetadata, null, 2));
     
     console.log(`Created ${regions.features.length} regions for ${countryId}`);
-    return regions;
+    return regionsWithMetadata;
   } catch (error) {
     console.error(`Error processing ${countryId} data:`, error);
     throw error;
@@ -141,28 +157,45 @@ async function createRegions(points, targetRegions, options) {
     workingPoints = simplifyPoints(points, Math.min(10000, points.features.length / 3));
   }
   
-  // 2. Determine clustering parameters
+  // 2. Determine parameters
   const bbox = turf.bbox(workingPoints);
   const area = turf.area(turf.bboxPolygon(bbox));
-  const pointDensity = workingPoints.features.length / area;
-  
-  // Calculate appropriate clustering distance based on data density and target regions
-  // Convert area to square kilometers first (it's in square meters by default)
   const areaInSqKm = area / 1000000;
-  const maxDistance = Math.sqrt(areaInSqKm / targetRegions) / 2;
   
-  console.log(`Area: ${areaInSqKm.toFixed(2)} sq km, Points: ${workingPoints.features.length}`);
-  console.log(`Point density: ${(workingPoints.features.length / areaInSqKm).toFixed(6)} points/sq km`);
-  console.log(`Clustering with max distance: ${maxDistance.toFixed(2)} km`);
+  // 3. Use different approach based on options
+  let regionPolygons;
   
-  // 3. Perform spatial clustering
-  let clusters = performDBSCANClustering(workingPoints, maxDistance, 3);
-  
-  // 4. Adjust the number of clusters to match the target by merging smaller clusters
-  clusters = adjustClusterCount(clusters, targetRegions);
-  
-  // 5. Generate polygons from the point clusters
-  const regionPolygons = clustersToPolygons(clusters);
+  if (options.useKoppen) {
+    console.log(`Creating climate-based regions using Köppen-Geiger data (resolution: ${options.koppenResolution})...`);
+    
+    // Load the Köppen-Geiger processor module
+    const koppenProcessor = require('./koppen-processor');
+    
+    // Group points by climate zone
+    const climateGroups = koppenProcessor.groupByClimateZone(workingPoints, options.koppenResolution);
+    console.log(`Found ${Object.keys(climateGroups).length} distinct climate zones with Street View coverage`);
+    
+    // Create regions based on climate zones
+    regionPolygons = await createClimateBasedRegions(workingPoints, climateGroups, targetRegions, options);
+  } else {
+    console.log(`Creating proximity-based regions without climate data...`);
+    
+    // Calculate appropriate clustering distance based on data density and target regions
+    const maxDistance = Math.sqrt(areaInSqKm / targetRegions) / 2;
+    
+    console.log(`Area: ${areaInSqKm.toFixed(2)} sq km, Points: ${workingPoints.features.length}`);
+    console.log(`Point density: ${(workingPoints.features.length / areaInSqKm).toFixed(6)} points/sq km`);
+    console.log(`Clustering with max distance: ${maxDistance.toFixed(2)} km`);
+    
+    // Perform spatial clustering
+    let clusters = performDBSCANClustering(workingPoints, maxDistance, 3);
+    
+    // Adjust the number of clusters to match the target by merging smaller clusters
+    clusters = adjustClusterCount(clusters, targetRegions);
+    
+    // Generate polygons from the point clusters
+    regionPolygons = clustersToPolygons(clusters);
+  }
   
   return regionPolygons;
 }
@@ -728,8 +761,418 @@ function getFrequentYears(points) {
   return sortedYears;
 }
 
+/**
+ * Create regions based on Köppen-Geiger climate zones
+ * 
+ * @param {Object} points - GeoJSON FeatureCollection of street view points
+ * @param {Object} climateGroups - Points grouped by climate zone
+ * @param {number} targetRegions - The desired number of regions
+ * @param {Object} options - Processing options
+ * @returns {Object} GeoJSON FeatureCollection of polygon regions
+ */
+async function createClimateBasedRegions(points, climateGroups, targetRegions, options) {
+  console.log('Creating climate-based regions...');
+  
+  // 1. Initial analysis of climate zones
+  const climateZones = Object.keys(climateGroups);
+  const totalPoints = points.features.length;
+  let regions = [];
+  
+  // Calculate a score for each climate zone based on its coverage
+  const zoneScores = {};
+  let totalScore = 0;
+  
+  for (const zoneKey of climateZones) {
+    const zone = climateGroups[zoneKey];
+    const zonePointCount = zone.points.length;
+    const zonePercentage = zonePointCount / totalPoints;
+    
+    // Score based on percentage of total points (coverage)
+    // Adjust score to give more importance to larger zones
+    const score = Math.pow(zonePercentage, 0.7) * 100;
+    zoneScores[zoneKey] = {
+      score,
+      pointCount: zonePointCount,
+      percentage: zonePercentage
+    };
+    
+    totalScore += score;
+  }
+  
+  // 2. Allocate regions based on climate zone coverage
+  // More coverage = more regions allocated to that climate zone
+  const zoneAllocation = {};
+  let allocatedRegions = 0;
+  
+  for (const zoneKey of climateZones) {
+    const scoreInfo = zoneScores[zoneKey];
+    
+    // Calculate how many regions to allocate to this zone
+    // Proportional to its score, with a minimum of 1 if it has enough points
+    const allocation = Math.max(
+      1,
+      Math.round((scoreInfo.score / totalScore) * targetRegions)
+    );
+    
+    // Ensure very small zones don't get too many regions
+    const maxRegionsForZone = Math.max(
+      1,
+      Math.ceil(climateGroups[zoneKey].points.length / 30)
+    );
+    
+    zoneAllocation[zoneKey] = Math.min(allocation, maxRegionsForZone);
+    allocatedRegions += zoneAllocation[zoneKey];
+    
+    console.log(`Climate zone ${zoneKey} (${climateGroups[zoneKey].name}): ${zoneAllocation[zoneKey]} regions`);
+  }
+  
+  // Adjust allocation if we're over or under the target
+  while (allocatedRegions !== targetRegions) {
+    if (allocatedRegions < targetRegions) {
+      // Add regions to the largest zones
+      const sortedZones = Object.keys(zoneScores)
+        .sort((a, b) => zoneScores[b].pointCount - zoneScores[a].pointCount);
+      
+      for (const zoneKey of sortedZones) {
+        if (allocatedRegions >= targetRegions) break;
+        
+        // Only add if the zone has enough points to justify another region
+        if (climateGroups[zoneKey].points.length >= zoneAllocation[zoneKey] * 30) {
+          zoneAllocation[zoneKey]++;
+          allocatedRegions++;
+        }
+      }
+    } else {
+      // Remove regions from the smallest zones
+      const sortedZones = Object.keys(zoneScores)
+        .sort((a, b) => zoneScores[a].pointCount - zoneScores[b].pointCount);
+      
+      for (const zoneKey of sortedZones) {
+        if (allocatedRegions <= targetRegions) break;
+        
+        // Only remove if the zone has more than 1 region
+        if (zoneAllocation[zoneKey] > 1) {
+          zoneAllocation[zoneKey]--;
+          allocatedRegions--;
+        }
+      }
+    }
+  }
+  
+  // Helper function to find key locations (centers)
+  const findLocationNames = (points) => {
+    // This is a placeholder for a more sophisticated method
+    // Would ideally use a geolocation service or database
+    // For now, we'll use approximate latitude/longitude ranges for major cities in different countries
+    
+    const center = calculateClusterCenter(points);
+    
+    // Peru cities (as an example)
+    const peruCities = [
+      { name: "Lima", lat: -12.046, lng: -77.043, radius: 0.5 },
+      { name: "Arequipa", lat: -16.409, lng: -71.537, radius: 0.5 },
+      { name: "Trujillo", lat: -8.109, lng: -79.03, radius: 0.5 },
+      { name: "Cusco", lat: -13.532, lng: -71.967, radius: 0.5 },
+      { name: "Piura", lat: -5.197, lng: -80.632, radius: 0.5 },
+      { name: "Chiclayo", lat: -6.777, lng: -79.844, radius: 0.5 },
+      { name: "Huancayo", lat: -12.067, lng: -75.205, radius: 0.5 },
+      { name: "Tacna", lat: -18.006, lng: -70.248, radius: 0.5 },
+      { name: "Iquitos", lat: -3.75, lng: -73.25, radius: 0.5 },
+      { name: "Pucallpa", lat: -8.378, lng: -74.555, radius: 0.5 },
+      { name: "Andes", lat: -14.0, lng: -73.0, radius: 2.0 },
+      { name: "Amazon", lat: -5.0, lng: -75.0, radius: 2.0 },
+      { name: "Coast", lat: -12.0, lng: -77.5, radius: 2.0 }
+    ];
+    
+    // Check if center is near any known city
+    for (const city of peruCities) {
+      const distance = haversineDistance(
+        { lat: center.lat, lng: center.lng },
+        { lat: city.lat, lng: city.lng }
+      );
+      
+      if (distance < city.radius * 2) {
+        return city.name;
+      }
+    }
+    
+    // No match found
+    return null;
+  };
+  
+  // 3. Process each climate zone to create its allocated regions
+  let regionId = 1;
+  const usedPoints = new Set(); // Track points already assigned to a region
+  
+  for (const zoneKey of climateZones) {
+    const zone = climateGroups[zoneKey];
+    const allocatedRegionCount = zoneAllocation[zoneKey];
+    
+    if (allocatedRegionCount === 0) {
+      continue; // Skip zones with no allocation
+    }
+    
+    // Filter out points that have already been used in other regions
+    const availablePoints = zone.points.filter(point => {
+      const pointId = `${point.geometry.coordinates[0]},${point.geometry.coordinates[1]}`;
+      return !usedPoints.has(pointId);
+    });
+    
+    if (availablePoints.length < 3) {
+      console.log(`Climate zone ${zoneKey} has insufficient available points (${availablePoints.length}), skipping`);
+      continue;
+    }
+    
+    const pointCollection = {
+      type: 'FeatureCollection',
+      features: availablePoints
+    };
+    
+    if (allocatedRegionCount === 1 || availablePoints.length < 50) {
+      // For small zones or those with just one region, create a single polygon
+      console.log(`Creating 1 region for climate zone ${zoneKey} with ${availablePoints.length} points`);
+      
+      try {
+        // Create a convex hull for all points in this climate zone
+        const polygon = createPolygonFromPoints(availablePoints);
+        if (polygon) {
+          // Get a location name if possible
+          const locationName = findLocationNames(availablePoints);
+          const regionName = locationName 
+            ? `${zoneKey}-${locationName}`
+            : `${zoneKey}-${regionId}`;
+          
+          polygon.properties = {
+            id: regionId,
+            name: regionName,
+            climateZone: zoneKey,
+            climateName: zone.name,
+            climateColor: zone.color,
+            pointCount: availablePoints.length
+          };
+          regions.push(polygon);
+          regionId++;
+          
+          // Mark these points as used
+          for (const point of availablePoints) {
+            const pointId = `${point.geometry.coordinates[0]},${point.geometry.coordinates[1]}`;
+            usedPoints.add(pointId);
+          }
+        }
+      } catch (error) {
+        console.error(`Error creating region for climate zone ${zoneKey}:`, error);
+      }
+    } else {
+      // For zones with multiple regions, perform DBSCAN clustering
+      console.log(`Creating ${allocatedRegionCount} regions for climate zone ${zoneKey} with ${availablePoints.length} points`);
+      
+      // Calculate appropriate clustering distance
+      const zoneBbox = turf.bbox(pointCollection);
+      const zoneArea = turf.area(turf.bboxPolygon(zoneBbox)) / 1000000; // in sq km
+      const clusterDist = Math.sqrt(zoneArea / allocatedRegionCount) / 2;
+      
+      // Perform clustering within this climate zone
+      let clusters = performDBSCANClustering(pointCollection, clusterDist, 3);
+      
+      // Adjust to match target allocation for this zone
+      clusters = adjustClusterCount(clusters, allocatedRegionCount);
+      
+      // Create polygons from clusters
+      for (const cluster of clusters) {
+        try {
+          // Skip clusters with too few points
+          if (cluster.points.length < 3) {
+            console.log(`Skipping small cluster with only ${cluster.points.length} points`);
+            continue;
+          }
+          
+          const polygon = createPolygonFromPoints(cluster.points);
+          if (polygon) {
+            // Get a location name if possible
+            const locationName = findLocationNames(cluster.points);
+            const regionName = locationName 
+              ? `${zoneKey}-${locationName}`
+              : `${zoneKey}-${regionId}`;
+            
+            polygon.properties = {
+              id: regionId,
+              name: regionName,
+              climateZone: zoneKey,
+              climateName: zone.name,
+              climateColor: zone.color,
+              pointCount: cluster.points.length,
+              clusterID: cluster.id,
+              yearTags: getFrequentYears(cluster.points)
+            };
+            regions.push(polygon);
+            regionId++;
+            
+            // Mark these points as used
+            for (const point of cluster.points) {
+              const pointId = `${point.geometry.coordinates[0]},${point.geometry.coordinates[1]}`;
+              usedPoints.add(pointId);
+            }
+          }
+        } catch (error) {
+          console.error(`Error creating cluster ${cluster.id} for climate zone ${zoneKey}:`, error);
+        }
+      }
+    }
+  }
+  
+  // 4. Ensure each region has a unique name and ID
+  console.log(`Finalizing ${regions.length} regions...`);
+  
+  // Sort regions by point count (highest first)
+  // This prioritizes larger, more significant regions
+  regions.sort((a, b) => b.properties.pointCount - a.properties.pointCount);
+  
+  // Assign proper IDs and ensure naming is consistent
+  for (let i = 0; i < regions.length; i++) {
+    const region = regions[i];
+    const uniqueId = i + 1;
+    const climateCode = region.properties.climateZone;
+    const climateName = region.properties.climateName;
+    
+    // Check if a location name was assigned
+    let locationName = region.properties.name 
+      ? region.properties.name.split('-').pop() 
+      : null;
+      
+    // If no location name or it's just a number, try to assign based on climate zone
+    if (!locationName || !isNaN(parseInt(locationName))) {
+      // Get approximate region based on climate
+      switch (climateCode) {
+        case 'BWh': 
+          locationName = 'Coast' + uniqueId;
+          break;
+        case 'BWk':
+          locationName = 'HighDesert' + uniqueId;
+          break;
+        case 'ET':
+          locationName = 'Andes' + uniqueId;
+          break;
+        case 'Af':
+          locationName = 'Amazon' + uniqueId;
+          break;
+        case 'Aw':
+          locationName = 'Savanna' + uniqueId;
+          break;
+        case 'Cfb':
+          locationName = 'Highlands' + uniqueId;
+          break;
+        default:
+          locationName = climateCode + uniqueId;
+      }
+    }
+    
+    // Create final region name
+    const regionName = `${climateCode}-${locationName}`;
+    
+    // Update properties
+    region.properties.id = uniqueId;
+    region.properties.name = regionName;
+    region.properties.order = uniqueId;
+    region.properties.description = `${climateName} region (Zone ${uniqueId})`;
+  }
+  
+  console.log(`Created ${regions.length} uniquely identified climate-based regions`);
+  
+  return {
+    type: 'FeatureCollection',
+    features: regions
+  };
+}
+
+/**
+ * Create a polygon from a set of points
+ * 
+ * @param {Object[]} points - Array of GeoJSON Point Features
+ * @returns {Object} GeoJSON Polygon Feature
+ */
+function createPolygonFromPoints(points) {
+  if (points.length < 3) {
+    console.log(`Cannot create polygon with only ${points.length} points`);
+    return null;
+  }
+  
+  // Create a FeatureCollection from the points
+  const pointCollection = {
+    type: 'FeatureCollection',
+    features: points
+  };
+  
+  try {
+    // First try to create a concave hull for more complex boundary shapes
+    // that better follow natural features like coastlines or mountain ranges
+    
+    // Calculate a reasonable concavity parameter based on point count and distribution
+    const bbox = turf.bbox(pointCollection);
+    const width = Math.abs(bbox[2] - bbox[0]);
+    const height = Math.abs(bbox[3] - bbox[1]);
+    const maxDimension = Math.max(width, height);
+    
+    // For climate-based regions, we want more complex shapes
+    // More points = potentially more complex shapes
+    let concavity;
+    if (points.length > 500) {
+      concavity = maxDimension / 10;
+    } else if (points.length > 200) {
+      concavity = maxDimension / 8;
+    } else if (points.length > 50) {
+      concavity = maxDimension / 6;
+    } else {
+      concavity = maxDimension / 4;
+    }
+    
+    // Try to create a concave hull if turf supports it
+    let polygon;
+    if (turf.concave) {
+      try {
+        polygon = turf.concave(pointCollection, {
+          maxEdge: concavity,
+          units: 'degrees'
+        });
+      } catch (concaveError) {
+        console.log(`Concave hull failed, falling back to convex hull: ${concaveError.message}`);
+        polygon = turf.convex(pointCollection);
+      }
+    } else {
+      // Fall back to convex hull if concave is not available
+      polygon = turf.convex(pointCollection);
+    }
+    
+    return polygon;
+  } catch (e) {
+    console.log(`Hull creation failed: ${e.message}`);
+    
+    // Fallback: create a buffer around the centroid
+    try {
+      const center = calculateClusterCenter(points);
+      const centroid = {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [center.lng, center.lat]
+        }
+      };
+      
+      // Use a radius proportional to the number of points
+      const radius = Math.max(20, Math.sqrt(points.length) * 5);
+      
+      // Convert km to degrees (approx 111km per degree)
+      const polygon = turf.buffer(centroid, radius / 111);
+      return polygon;
+    } catch (e2) {
+      console.log(`Buffer creation failed: ${e2.message}`);
+      return null;
+    }
+  }
+}
+
 module.exports = {
   processCountryData,
   convertToGeoJSON,
-  createRegions
+  createRegions,
+  createClimateBasedRegions
 };

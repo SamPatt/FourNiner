@@ -46,9 +46,98 @@ const CLIMATE_CODES = {
   30: { code: 'EF', name: 'Polar, frost', color: [102, 102, 102] }
 };
 
+// Global flag to track if GDAL is available
+let isGdalAvailable = null;
+let gdalErrorReported = false;
+
+/**
+ * Check if GDAL is available on the system
+ * 
+ * @returns {boolean} True if GDAL is available, false otherwise
+ */
+function checkGdalAvailability() {
+  if (isGdalAvailable !== null) {
+    return isGdalAvailable;
+  }
+  
+  try {
+    execSync('gdallocationinfo --version', { stdio: 'ignore' });
+    isGdalAvailable = true;
+    console.log('GDAL is available. Using Köppen-Geiger climate data.');
+  } catch (error) {
+    isGdalAvailable = false;
+    console.warn('GDAL is not available. Köppen-Geiger climate data will be simulated.');
+  }
+  
+  return isGdalAvailable;
+}
+
+/**
+ * Simulate a Köppen-Geiger climate zone based on latitude and longitude
+ * This is a fallback when GDAL is not available
+ * 
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @returns {Object} Simulated climate code
+ */
+function simulateClimateZone(lat, lng) {
+  // Simple deterministic algorithm to assign climate zones based on coordinates
+  // This is just an approximation and will not match real Köppen-Geiger data
+  const absLat = Math.abs(lat);
+  
+  // Equatorial regions (0-10 degrees) - tropical climates
+  if (absLat < 10) {
+    if (lng % 20 < 10) {
+      return { value: 1, ...CLIMATE_CODES[1] }; // Af - Tropical rainforest
+    } else {
+      return { value: 3, ...CLIMATE_CODES[3] }; // Aw - Tropical savannah
+    }
+  }
+  
+  // Subtropical regions (10-30 degrees)
+  else if (absLat < 30) {
+    if (lng % 20 < 7) {
+      return { value: 4, ...CLIMATE_CODES[4] }; // BWh - Hot desert
+    } else if (lng % 20 < 14) {
+      return { value: 6, ...CLIMATE_CODES[6] }; // BSh - Hot steppe
+    } else {
+      return { value: 14, ...CLIMATE_CODES[14] }; // Cfa - Humid subtropical
+    }
+  }
+  
+  // Temperate regions (30-50 degrees)
+  else if (absLat < 50) {
+    if (lng % 24 < 8) {
+      return { value: 8, ...CLIMATE_CODES[8] }; // Csa - Mediterranean hot summer
+    } else if (lng % 24 < 16) {
+      return { value: 15, ...CLIMATE_CODES[15] }; // Cfb - Temperate oceanic
+    } else {
+      return { value: 26, ...CLIMATE_CODES[26] }; // Dfb - Warm-summer humid continental
+    }
+  }
+  
+  // Subpolar regions (50-70 degrees)
+  else if (absLat < 70) {
+    if (lng % 20 < 10) {
+      return { value: 27, ...CLIMATE_CODES[27] }; // Dfc - Subarctic
+    } else {
+      return { value: 26, ...CLIMATE_CODES[26] }; // Dfb - Warm-summer humid continental
+    }
+  }
+  
+  // Polar regions (70-90 degrees)
+  else {
+    if (absLat < 80) {
+      return { value: 29, ...CLIMATE_CODES[29] }; // ET - Tundra
+    } else {
+      return { value: 30, ...CLIMATE_CODES[30] }; // EF - Ice cap
+    }
+  }
+}
+
 /**
  * Get the Köppen-Geiger climate code for a given coordinate
- * This is a simplified example - a real implementation would read directly from the TIF file
+ * Falls back to a simplified simulation if GDAL is not available
  * 
  * @param {number} lat - Latitude
  * @param {number} lng - Longitude
@@ -57,6 +146,18 @@ const CLIMATE_CODES = {
  */
 function getClimateCode(lat, lng, resolution = '0p5') {
   try {
+    // First check if GDAL is available
+    if (!checkGdalAvailability()) {
+      // If GDAL is not available, use our simulation
+      if (!gdalErrorReported) {
+        console.warn('Using simulated Köppen-Geiger climate data as GDAL is not installed.');
+        console.warn('For accurate climate-based regions, please install GDAL.');
+        gdalErrorReported = true;
+      }
+      return simulateClimateZone(lat, lng);
+    }
+    
+    // If GDAL is available, proceed with the real implementation
     // Check if the provided resolution is valid
     const validResolutions = ['0p00833333', '0p1', '0p5', '1p0'];
     if (!validResolutions.includes(resolution)) {
@@ -67,7 +168,6 @@ function getClimateCode(lat, lng, resolution = '0p5') {
     const tifPath = path.join(__dirname, '..', 'map_data', `koppen_geiger_${resolution}.tif`);
     
     // Use GDAL to get the pixel value at the specified coordinate
-    // This requires gdallocationinfo to be installed (part of GDAL)
     const command = `gdallocationinfo -valonly -wgs84 ${tifPath} ${lng} ${lat}`;
     
     try {
@@ -84,11 +184,11 @@ function getClimateCode(lat, lng, resolution = '0p5') {
       };
     } catch (error) {
       console.error('Error running gdallocationinfo:', error.message);
-      return null;
+      return simulateClimateZone(lat, lng); // Fall back to simulation if GDAL command fails
     }
   } catch (error) {
     console.error('Error getting climate code:', error);
-    return null;
+    return simulateClimateZone(lat, lng); // Fall back to simulation on any error
   }
 }
 
