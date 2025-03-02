@@ -91,6 +91,40 @@ app.post('/api/flashcard', (req, res) => {
     }
 });
 
+// API endpoint to get country boundaries in GeoJSON format
+app.get('/api/countries', (req, res) => {
+    try {
+        const countriesPath = path.join(__dirname, 'map_data', 'countries.geojson');
+        
+        // Check if countries file exists
+        if (!fs.existsSync(countriesPath)) {
+            console.error('Countries GeoJSON file not found:', countriesPath);
+            return res.status(404).json({ 
+                error: 'Countries data not found',
+                message: 'The countries GeoJSON file is missing. Please add a countries.geojson file to your map_data directory.'
+            });
+        }
+        
+        console.log('Serving countries GeoJSON file:', countriesPath);
+        
+        // Set appropriate content type
+        res.setHeader('Content-Type', 'application/json');
+        
+        // Stream the file directly to response instead of loading it into memory
+        const fileStream = fs.createReadStream(countriesPath);
+        
+        fileStream.on('error', (err) => {
+            console.error('Error streaming countries GeoJSON file:', err);
+            res.status(500).json({ error: 'Error reading countries data' });
+        });
+        
+        fileStream.pipe(res);
+    } catch (error) {
+        console.error('Error retrieving countries data:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // API endpoint to get regions for a country
 app.get('/api/regions/:countryId', (req, res) => {
     try {

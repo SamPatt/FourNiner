@@ -166,6 +166,27 @@
         .mode-bar a:hover {
             background-color: #2980b9;
         }
+        /* Tooltip for region cells */
+        .grid-cell {
+            position: relative;
+        }
+        .grid-cell:hover::after {
+            content: attr(title);
+            position: absolute;
+            left: 50%;
+            bottom: 100%;
+            transform: translateX(-50%);
+            background-color: rgba(0,0,0,0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 100;
+            pointer-events: none;
+            transition: all 0.2s ease;
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
@@ -264,107 +285,130 @@
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
         
+        // Country polygons layer
+        let countryPolygonsLayer = null;
+        
         // Country boundaries and their bounding boxes
         const countries = {
             russia: {
                 name: "Russia",
                 bounds: [[41.2, 19.6], [69.5, 179.9]],
-                coverage: 0.85
+                coverage: 0.85,
+                code: "RU"
             },
             usa: {
                 name: "United States",
                 bounds: [[24.5, -125.0], [49.4, -66.9]],
-                coverage: 0.95
+                coverage: 0.95,
+                code: "US"
             },
             canada: {
                 name: "Canada",
                 bounds: [[41.7, -141.0], [69.7, -52.6]],
-                coverage: 0.80
+                coverage: 0.80,
+                code: "CA"
             },
             mexico: {
                 name: "Mexico",
                 bounds: [[14.5, -118.4], [32.7, -86.7]],
-                coverage: 0.85
+                coverage: 0.85,
+                code: "MX"
             },
             brazil: {
                 name: "Brazil",
                 bounds: [[-33.7, -73.9], [5.3, -34.7]],
-                coverage: 0.75
+                coverage: 0.75,
+                code: "BR"
             },
             argentina: {
                 name: "Argentina",
                 bounds: [[-55.0, -73.6], [-21.8, -53.6]],
-                coverage: 0.75
+                coverage: 0.75,
+                code: "AR"
             },
             chile: {
                 name: "Chile",
                 bounds: [[-55.9, -75.6], [-17.5, -66.0]],
-                coverage: 0.70
+                coverage: 0.70,
+                code: "CL"
             },
             peru: {
                 name: "Peru",
                 bounds: [[-18.4, -81.3], [-0.0, -68.7]],
-                coverage: 0.65
+                coverage: 0.65,
+                code: "PE"
             },
             australia: {
                 name: "Australia",
                 bounds: [[-43.6, 112.9], [-10.6, 154.0]],
-                coverage: 0.90
+                coverage: 0.90,
+                code: "AU"
             },
             japan: {
                 name: "Japan",
                 bounds: [[30.9, 129.5], [45.5, 145.8]],
-                coverage: 0.98
+                coverage: 0.98,
+                code: "JP"
             },
             mongolia: {
                 name: "Mongolia",
                 bounds: [[41.5, 87.8], [52.1, 119.9]],
-                coverage: 0.60
+                coverage: 0.60,
+                code: "MN"
             },
             kazakhstan: {
                 name: "Kazakhstan",
                 bounds: [[40.6, 46.5], [55.4, 87.3]],
-                coverage: 0.65
+                coverage: 0.65,
+                code: "KZ"
             },
             germany: {
                 name: "Germany",
                 bounds: [[47.3, 5.9], [55.1, 15.0]],
-                coverage: 0.98
+                coverage: 0.98,
+                code: "DE"
             },
             poland: {
                 name: "Poland",
                 bounds: [[49.0, 14.1], [54.9, 24.2]],
-                coverage: 0.95
+                coverage: 0.95,
+                code: "PL"
             },
             ukraine: {
                 name: "Ukraine",
                 bounds: [[44.4, 22.2], [52.4, 40.2]],
-                coverage: 0.85
+                coverage: 0.85,
+                code: "UA"
             },
             southafrica: {
                 name: "South Africa",
                 bounds: [[-34.8, 16.5], [-22.1, 32.9]],
-                coverage: 0.80
+                coverage: 0.80,
+                code: "ZA"
             },
             france: {
                 name: "France",
                 bounds: [[41.3, -5.1], [51.1, 9.6]],
-                coverage: 0.98
+                coverage: 0.98,
+                code: "FR"
             },
             spain: {
                 name: "Spain",
                 bounds: [[36.0, -9.4], [43.8, 3.4]],
-                coverage: 0.92
+                coverage: 0.92,
+                code: "ES"
             },
             india: {
                 name: "India",
                 bounds: [[6.7, 68.1], [35.5, 97.4]],
-                coverage: 0.85
+                coverage: 0.85,
+                code: "IN"
             },
             indonesia: {
                 name: "Indonesia",
                 bounds: [[-11.0, 95.0], [6.2, 141.0]],
-                coverage: 0.70
+                coverage: 0.70,
+                code: "ID"
             }
         };
         
@@ -380,6 +424,109 @@
             userProgress = {};
         }
         
+        // Add country polygons to the map
+        async function addCountryPolygons() {
+            // Remove existing country polygons if they exist
+            if (countryPolygonsLayer) {
+                map.removeLayer(countryPolygonsLayer);
+            }
+            
+            try {
+                console.log('Fetching country boundaries from server...');
+                
+                // Fetch country GeoJSON data
+                const response = await fetch('/api/countries');
+                
+                if (!response.ok) {
+                    console.error('Failed to load country boundaries:', response.status, response.statusText);
+                    return;
+                }
+                
+                console.log('Country boundaries loaded successfully');
+                const countryData = await response.json();
+                
+                // Create country polygons layer
+                countryPolygonsLayer = L.geoJSON(countryData, {
+                    style: (feature) => {
+                        const countryCode = feature.properties.ISO_A2;
+                        
+                        // Find matching country in our list
+                        let countryMatch = null;
+                        for (const [id, country] of Object.entries(countries)) {
+                            if (country.code && country.code === countryCode) {
+                                countryMatch = id;
+                                break;
+                            }
+                        }
+                        
+                        // Check if data is available for this country
+                        const hasData = countryMatch !== null;
+                        
+                        return {
+                            fillColor: hasData ? '#3498db' : '#95a5a6',
+                            weight: hasData ? 2 : 1,
+                            opacity: 1,
+                            color: hasData ? '#2980b9' : '#7f8c8d',
+                            fillOpacity: hasData ? 0.4 : 0.1,
+                            dashArray: hasData ? null : '3',
+                            interactive: hasData
+                        };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        // Get country name and ISO code
+                        const countryName = feature.properties.ADMIN;
+                        const countryCode = feature.properties.ISO_A2;
+                        
+                        // Find matching country in our list
+                        let countryMatch = null;
+                        for (const [id, country] of Object.entries(countries)) {
+                            if (country.code && country.code === countryCode) {
+                                countryMatch = id;
+                                break;
+                            }
+                        }
+                        
+                        // Check if data is available for this country
+                        const hasData = countryMatch !== null;
+                        
+                        // Add interaction handlers if data is available
+                        if (hasData) {
+                            // Add hover effects
+                            layer.on('mouseover', function (e) {
+                                layer.setStyle({
+                                    weight: 3,
+                                    color: '#1abc9c',
+                                    fillOpacity: 0.7
+                                });
+                                
+                                // Bring to front to prevent border clipping
+                                if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+                                    layer.bringToFront();
+                                }
+                            });
+                            
+                            layer.on('mouseout', function (e) {
+                                countryPolygonsLayer.resetStyle(layer);
+                            });
+                            
+                            // Add click handler
+                            layer.on('click', () => {
+                                // Update dropdown and load country
+                                document.getElementById('country-select').value = countryMatch;
+                                currentCountry = countryMatch;
+                                loadCurrentCountry();
+                            });
+                        }
+                    }
+                }).addTo(map);
+                
+                console.log('Country polygons added to map');
+                
+            } catch (error) {
+                console.error('Error loading country boundaries:', error);
+            }
+        }
+        
         // Current selected country and region
         let currentCountry = 'russia';
         let selectedRegion = null;
@@ -389,10 +536,30 @@
             // Replace spaces with hyphens in tags
             const countryTag = countries[countryId].name.replace(/\s+/g, '-').toLowerCase();
             
+            // Check if we have a region name stored in our regions data
+            let regionName = '';
+            const regionNumber = parseInt(regionId.substring(1), 10);
+            
+            if (geoRegions.regions[countryId] && 
+                geoRegions.regions[countryId].features) {
+                
+                // Find the region feature
+                const regionFeature = geoRegions.regions[countryId].features.find(
+                    feature => feature.properties.clusterID === regionNumber
+                );
+                
+                // Extract region name if available
+                if (regionFeature && 
+                    regionFeature.properties.regionName && 
+                    regionFeature.properties.regionName.displayName) {
+                    regionName = ` (${regionFeature.properties.regionName.displayName})`;
+                }
+            }
+            
             return `#flash-geo/regions/${countryTag}/${regionId}
 ![Screenshot of the region]
 ?
-${countries[countryId].name} Region ${regionId.substring(1)}`;
+${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
         }
         
         // Update flashcard preview
@@ -713,6 +880,9 @@ ${countries[countryId].name} Region ${regionId.substring(1)}`;
                             <p>Select a region to view or create a flashcard.</p>
                         </div>
                     `;
+                    
+                    // Update the dropdown selection to match the current country
+                    document.getElementById('country-select').value = currentCountry;
                 } else {
                     console.error(`Failed to load regions for ${currentCountry}`);
                 }
@@ -749,6 +919,9 @@ ${countries[countryId].name} Region ${regionId.substring(1)}`;
                     statusMessage.style.display = 'none';
                 }, 5000);
             }
+            
+            // Load country polygons for clickable selection
+            await addCountryPolygons();
             
             // Try to load from server automatically
             try {

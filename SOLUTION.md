@@ -89,6 +89,52 @@ All existing functionality continues to work:
 - Flashcard creation
 - Obsidian integration
 
+## Region Naming Features
+
+The implementation now includes two complementary naming systems for natural regions:
+
+### 1. Directional ID System
+
+Regions are now identified using a geographic coordinate system relative to the country's center:
+
+1. **Center-based Coordinates**
+   - The region closest to the country's geographical center is labeled as 'C'
+   - Other regions are labeled according to their direction and distance from the center
+   - Format: [Direction][Number] (e.g., N1, SE2, W3)
+
+2. **Direction Determination**
+   - 8 cardinal and intercardinal directions: N, NE, E, SE, S, SW, W, NW
+   - Calculated based on the bearing from the country center to each region
+   - Numbering increases with distance from center (N1 is closer than N2)
+
+3. **Algorithm Implementation**
+   - Calculates center of the entire country based on all region centroids
+   - Determines bearing and distance from center to each region
+   - Groups regions by direction and sorts by distance
+   - Assigns sequential numbers within each direction group
+
+### 2. City-based Names
+
+Each region is additionally associated with important cities:
+
+1. **City Data Integration**
+   - Uses GeoNames `cities5000.txt` data (cities with population > 5,000)
+   - Associates each region with relevant city names
+   - Dynamically determines the most significant cities within each region
+
+2. **Region Name Generation**
+   - Primary cities are displayed for each region
+   - When two cities of comparable size exist, both are shown
+   - Combines with directional IDs for maximum clarity
+
+3. **User Interface Integration**
+   - Region names appear in map popups alongside directional IDs
+   - Hover tooltips on region grid cells
+   - Names included in the selected region indicator
+   - Integrated into flashcard content
+
+Together, these systems provide both a consistent geographical reference system (directional IDs) and recognizable landmarks (city names) to help users learn and remember regions more effectively.
+
 ## Next Steps
 
 Potential improvements for the future:
@@ -108,3 +154,8 @@ Potential improvements for the future:
 4. **Performance Optimizations**
    - Client-side region processing for smaller countries
    - Progressive loading of region data
+
+5. **Enhanced Region Naming**
+   - Fallback to administrative regions when no cities are present
+   - User ability to customize region names
+   - Better handling of regions spanning multiple countries

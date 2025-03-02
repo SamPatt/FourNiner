@@ -20,6 +20,61 @@ try {
   turf = require('turf');
 }
 
+// Cities data cache
+let citiesData = null;
+
+/**
+ * Load and parse the GeoNames cities5000.txt file
+ * 
+ * @returns {Array} Array of city objects with name, population, lat, lng properties
+ */
+function loadCitiesData() {
+  if (citiesData !== null) {
+    return citiesData; // Return cached data if already loaded
+  }
+  
+  console.log('Loading cities data from cities5000.txt...');
+  
+  const citiesPath = path.join(__dirname, '..', 'map_data', 'cities5000.txt');
+  if (!fs.existsSync(citiesPath)) {
+    console.error('Cities data file not found:', citiesPath);
+    return [];
+  }
+  
+  try {
+    const fileContent = fs.readFileSync(citiesPath, 'utf8');
+    const lines = fileContent.split('\n').filter(line => line.trim().length > 0);
+    
+    const cities = lines.map(line => {
+      const fields = line.split('\t');
+      
+      // Parse fields based on GeoNames format
+      // geonameid, name, asciiname, alternatenames, latitude, longitude, feature class, 
+      // feature code, country code, cc2, admin1 code, admin2 code, admin3 code, 
+      // admin4 code, population, elevation, dem, timezone, modification date
+      return {
+        id: fields[0],
+        name: fields[1],
+        asciiName: fields[2],
+        lat: parseFloat(fields[4]),
+        lng: parseFloat(fields[5]),
+        countryCode: fields[8],
+        admin1Code: fields[10],
+        admin2Code: fields[11],
+        population: parseInt(fields[14]) || 0,
+        featureCode: fields[7]
+      };
+    });
+    
+    console.log(`Loaded ${cities.length} cities from cities5000.txt`);
+    citiesData = cities;
+    return cities;
+  } catch (error) {
+    console.error('Error loading cities data:', error);
+    return [];
+  }
+}
+
 /**
  * Process a GeoJSON Street View dataset to create geographic regions
  * 
@@ -52,7 +107,7 @@ async function processCountryData(countryId, targetRegions = 32, options = {}) {
     const points = convertToGeoJSON(streetViewData);
     
     // Perform clustering to create natural regions
-    const regions = await createRegions(points, targetRegions, opts);
+    const regions = await createRegions(points, targetRegions, opts, countryId);
     
     // Save the processed regions
     const outputPath = path.join(__dirname, '..', 'map_data', `${countryId}_regions.json`);
@@ -129,9 +184,10 @@ function convertToGeoJSON(rawData) {
  * @param {Object} points - GeoJSON FeatureCollection of street view points
  * @param {number} targetRegions - The desired number of regions
  * @param {Object} options - Processing options
+ * @param {string} countryId - The country identifier (e.g., 'russia')
  * @returns {Object} GeoJSON FeatureCollection of polygon regions
  */
-async function createRegions(points, targetRegions, options) {
+async function createRegions(points, targetRegions, options, countryId = null) {
   console.log(`Creating regions from ${points.features.length} points...`);
   
   // 1. First reduce the data if it's too large
@@ -161,8 +217,11 @@ async function createRegions(points, targetRegions, options) {
   // 4. Adjust the number of clusters to match the target by merging smaller clusters
   clusters = adjustClusterCount(clusters, targetRegions);
   
-  // 5. Generate polygons from the point clusters
-  const regionPolygons = clustersToPolygons(clusters);
+  // 5. Generate polygons from the point clusters - pass country ID for city lookup
+  const regionPolygons = clustersToPolygons(clusters, countryId);
+  
+  // 6. Assign directional IDs to regions based on distance from center
+  assignDirectionalIds(regionPolygons, countryId);
   
   return regionPolygons;
 }
@@ -619,10 +678,15 @@ function splitCluster(cluster, k) {
  * Convert clusters of points to polygon regions
  * 
  * @param {Object[]} clusters - Array of clusters
+ * @param {string} countryId - The country ID being processed
  * @returns {Object} GeoJSON FeatureCollection of polygons
  */
-function clustersToPolygons(clusters) {
+function clustersToPolygons(clusters, countryId = null) {
   console.log('Converting clusters to polygon regions...');
+  
+  // Get the country code for the current country
+  const countryCode = getCountryCode(countryId);
+  console.log(`Using country code: ${countryCode || 'None'} for ${countryId}`);
   
   const features = [];
   
@@ -678,12 +742,17 @@ function clustersToPolygons(clusters) {
         continue;
       }
       
+      // Find cities within this region
+      const { regionName } = findCitiesInRegion(polygon, countryCode);
+      
       // Add properties to the polygon
       polygon.properties = {
         clusterID: cluster.id,
         pointCount: cluster.points.length,
         // Add some metadata from the points (most frequent years, etc.)
-        yearTags: getFrequentYears(cluster.points)
+        yearTags: getFrequentYears(cluster.points),
+        // Add region name information if available
+        regionName: regionName || null
       };
       
       features.push(polygon);
@@ -696,6 +765,41 @@ function clustersToPolygons(clusters) {
     type: 'FeatureCollection',
     features: features
   };
+}
+
+/**
+ * Get the ISO country code for a given country ID
+ * 
+ * @param {string} countryId - The country identifier (e.g., 'russia')
+ * @returns {string|null} Two-letter ISO country code or null if not found
+ */
+function getCountryCode(countryId) {
+  if (!countryId) return null;
+  
+  const countryMapping = {
+    'russia': 'RU',
+    'usa': 'US',
+    'canada': 'CA',
+    'mexico': 'MX',
+    'brazil': 'BR',
+    'argentina': 'AR',
+    'chile': 'CL',
+    'peru': 'PE',
+    'australia': 'AU',
+    'japan': 'JP',
+    'mongolia': 'MN',
+    'kazakhstan': 'KZ',
+    'germany': 'DE',
+    'poland': 'PL',
+    'ukraine': 'UA',
+    'southafrica': 'ZA',
+    'france': 'FR',
+    'spain': 'ES',
+    'india': 'IN',
+    'indonesia': 'ID'
+  };
+  
+  return countryMapping[countryId.toLowerCase()] || null;
 }
 
 /**
@@ -726,6 +830,381 @@ function getFrequentYears(points) {
     }));
   
   return sortedYears;
+}
+
+/**
+ * Find cities within a region polygon and determine the most significant ones
+ * 
+ * @param {Object} polygon - GeoJSON polygon representing a region
+ * @param {string} countryCode - Two-letter country code to filter cities (e.g., 'US')
+ * @returns {Object} Object containing region name info with primary and secondary cities
+ */
+function findCitiesInRegion(polygon, countryCode = null) {
+  // Load cities data if not already loaded
+  const cities = loadCitiesData();
+  if (cities.length === 0) {
+    return { regionName: null };
+  }
+  
+  // Filter cities by country if specified
+  let countryCities = cities;
+  if (countryCode) {
+    countryCities = cities.filter(city => city.countryCode === countryCode.toUpperCase());
+    console.log(`Found ${countryCities.length} cities in country ${countryCode}`);
+  }
+  
+  // Find cities that are inside this region's polygon
+  const citiesInRegion = [];
+  
+  for (const city of countryCities) {
+    // Create a GeoJSON point for the city
+    const cityPoint = {
+      type: 'Feature',
+      geometry: {
+        type: 'Point',
+        coordinates: [city.lng, city.lat]
+      }
+    };
+    
+    // Check if the city point is inside the polygon
+    try {
+      if (turf.booleanPointInPolygon(cityPoint, polygon)) {
+        citiesInRegion.push(city);
+      }
+    } catch (error) {
+      // Skip invalid geometries
+      continue;
+    }
+  }
+  
+  console.log(`Found ${citiesInRegion.length} cities in the region`);
+  
+  // If no cities found, return null
+  if (citiesInRegion.length === 0) {
+    return { regionName: null };
+  }
+  
+  // Sort cities by population (largest first)
+  citiesInRegion.sort((a, b) => b.population - a.population);
+  
+  // Get top 2 cities
+  const topCities = citiesInRegion.slice(0, 2);
+  
+  // If the largest city is more than 3x larger than the second, only use the largest
+  const primaryCity = topCities[0];
+  let secondaryCity = null;
+  
+  if (topCities.length > 1 && (primaryCity.population < topCities[1].population * 3)) {
+    secondaryCity = topCities[1];
+  }
+  
+  // Create region name structure
+  const regionName = {
+    primary: {
+      name: primaryCity.name,
+      population: primaryCity.population
+    },
+    secondary: secondaryCity ? {
+      name: secondaryCity.name,
+      population: secondaryCity.population
+    } : null,
+    // Generate a display name based on the cities
+    displayName: secondaryCity 
+      ? `${primaryCity.name} / ${secondaryCity.name}`
+      : primaryCity.name
+  };
+  
+  return { regionName };
+}
+
+/**
+ * Assign directional IDs to regions based on their position relative to country center
+ * 
+ * @param {Object} geoJson - GeoJSON FeatureCollection of regions
+ * @param {string} countryId - The country identifier
+ */
+function assignDirectionalIds(geoJson, countryId) {
+  console.log('Assigning directional IDs to regions...');
+  
+  if (!geoJson || !geoJson.features || geoJson.features.length === 0) {
+    console.error('No regions to assign IDs to');
+    return;
+  }
+  
+  // Calculate the centroid of the entire country
+  const allPoints = {
+    type: 'FeatureCollection',
+    features: []
+  };
+  
+  // Collect all region centers
+  const regionCenters = [];
+  geoJson.features.forEach(feature => {
+    // Calculate center of each region
+    const center = turf.center(feature);
+    const coords = center.geometry.coordinates;
+    regionCenters.push({
+      region: feature,
+      center: {
+        lng: coords[0],
+        lat: coords[1]
+      }
+    });
+    
+    // Add to all points
+    allPoints.features.push(center);
+  });
+  
+  // Find the overall center of the country
+  const countryCenter = turf.center(allPoints);
+  const countryCenterCoords = {
+    lng: countryCenter.geometry.coordinates[0],
+    lat: countryCenter.geometry.coordinates[1]
+  };
+  console.log(`Country center: ${countryCenterCoords.lat}, ${countryCenterCoords.lng}`);
+  
+  // Find region closest to center and mark it as 'C'
+  let centerRegion = null;
+  let minDistToCenter = Infinity;
+  
+  regionCenters.forEach(regionInfo => {
+    const dist = haversineDistance(regionInfo.center, countryCenterCoords);
+    if (dist < minDistToCenter) {
+      minDistToCenter = dist;
+      centerRegion = regionInfo.region;
+    }
+  });
+  
+  if (centerRegion) {
+    // Mark the center region
+    centerRegion.properties.directionId = 'C';
+    console.log(`Center region is ${centerRegion.properties.clusterID}`);
+  } else {
+    console.error('Could not find center region');
+    return;
+  }
+  
+  // Calculate direction and distance for all other regions
+  const directions = [];
+  
+  regionCenters.forEach(regionInfo => {
+    const region = regionInfo.region;
+    
+    // Skip center region
+    if (region === centerRegion) return;
+    
+    const center = regionInfo.center;
+    
+    // Calculate bearing from country center to region center
+    const bearing = calculateBearing(
+      countryCenterCoords.lat, 
+      countryCenterCoords.lng,
+      center.lat,
+      center.lng
+    );
+    
+    // Determine direction based on bearing
+    let direction;
+    let primaryCardinal; // Track if this is a primary direction (N,E,S,W)
+    
+    if (bearing >= 337.5 || bearing < 22.5) {
+      direction = 'N';
+      primaryCardinal = true;
+    } else if (bearing >= 22.5 && bearing < 67.5) {
+      direction = 'NE';
+      primaryCardinal = false;
+    } else if (bearing >= 67.5 && bearing < 112.5) {
+      direction = 'E';
+      primaryCardinal = true;
+    } else if (bearing >= 112.5 && bearing < 157.5) {
+      direction = 'SE';
+      primaryCardinal = false;
+    } else if (bearing >= 157.5 && bearing < 202.5) {
+      direction = 'S';
+      primaryCardinal = true;
+    } else if (bearing >= 202.5 && bearing < 247.5) {
+      direction = 'SW';
+      primaryCardinal = false;
+    } else if (bearing >= 247.5 && bearing < 292.5) {
+      direction = 'W';
+      primaryCardinal = true;
+    } else {
+      direction = 'NW';
+      primaryCardinal = false;
+    }
+    
+    // Calculate distance from country center
+    const distance = haversineDistance(center, countryCenterCoords);
+    
+    // Store direction, distance, and region reference
+    directions.push({
+      region,
+      direction,
+      primaryCardinal,
+      bearing,
+      distance,
+      center
+    });
+  });
+  
+  // First, sort all regions by distance to center
+  directions.sort((a, b) => a.distance - b.distance);
+  
+  // Create groups for each primary cardinal direction (N, E, S, W)
+  const primaryDirections = {
+    'N': null, 'E': null, 'S': null, 'W': null
+  };
+  
+  // Find the closest region in each primary direction
+  directions.forEach(item => {
+    const dir = item.direction;
+    
+    // If it's a primary direction and we haven't assigned one yet
+    if ((dir === 'N' || dir === 'E' || dir === 'S' || dir === 'W') && 
+        primaryDirections[dir] === null) {
+      primaryDirections[dir] = item;
+    }
+  });
+  
+  // Find the closest intercardinal regions that could be better assigned to primary directions
+  const reassignCandidates = [];
+  
+  if (primaryDirections['N'] === null) {
+    // Find the closest NE or NW to reassign to N
+    const neCandidate = directions.find(item => item.direction === 'NE');
+    const nwCandidate = directions.find(item => item.direction === 'NW');
+    
+    if (neCandidate && nwCandidate) {
+      reassignCandidates.push(neCandidate.distance < nwCandidate.distance ? neCandidate : nwCandidate);
+    } else if (neCandidate) {
+      reassignCandidates.push(neCandidate);
+    } else if (nwCandidate) {
+      reassignCandidates.push(nwCandidate);
+    }
+  }
+  
+  if (primaryDirections['E'] === null) {
+    // Find the closest NE or SE to reassign to E
+    const neCandidate = directions.find(item => item.direction === 'NE');
+    const seCandidate = directions.find(item => item.direction === 'SE');
+    
+    if (neCandidate && seCandidate) {
+      reassignCandidates.push(neCandidate.distance < seCandidate.distance ? neCandidate : seCandidate);
+    } else if (neCandidate) {
+      reassignCandidates.push(neCandidate);
+    } else if (seCandidate) {
+      reassignCandidates.push(seCandidate);
+    }
+  }
+  
+  if (primaryDirections['S'] === null) {
+    // Find the closest SE or SW to reassign to S
+    const seCandidate = directions.find(item => item.direction === 'SE');
+    const swCandidate = directions.find(item => item.direction === 'SW');
+    
+    if (seCandidate && swCandidate) {
+      reassignCandidates.push(seCandidate.distance < swCandidate.distance ? seCandidate : swCandidate);
+    } else if (seCandidate) {
+      reassignCandidates.push(seCandidate);
+    } else if (swCandidate) {
+      reassignCandidates.push(swCandidate);
+    }
+  }
+  
+  if (primaryDirections['W'] === null) {
+    // Find the closest SW or NW to reassign to W
+    const swCandidate = directions.find(item => item.direction === 'SW');
+    const nwCandidate = directions.find(item => item.direction === 'NW');
+    
+    if (swCandidate && nwCandidate) {
+      reassignCandidates.push(swCandidate.distance < nwCandidate.distance ? swCandidate : nwCandidate);
+    } else if (swCandidate) {
+      reassignCandidates.push(swCandidate);
+    } else if (nwCandidate) {
+      reassignCandidates.push(nwCandidate);
+    }
+  }
+  
+  // Sort candidates by distance
+  reassignCandidates.sort((a, b) => a.distance - b.distance);
+  
+  // Reassign the closest intercardinal directions to primary directions if needed
+  reassignCandidates.forEach(candidate => {
+    // Determine which primary direction to assign based on bearing
+    let newDirection;
+    if (candidate.bearing >= 315 || candidate.bearing < 45) {
+      newDirection = 'N';
+    } else if (candidate.bearing >= 45 && candidate.bearing < 135) {
+      newDirection = 'E';
+    } else if (candidate.bearing >= 135 && candidate.bearing < 225) {
+      newDirection = 'S';
+    } else {
+      newDirection = 'W';
+    }
+    
+    // Only reassign if this primary direction is empty
+    if (primaryDirections[newDirection] === null) {
+      console.log(`Reassigning ${candidate.direction} region at distance ${candidate.distance.toFixed(2)}km to ${newDirection}`);
+      candidate.direction = newDirection;
+      primaryDirections[newDirection] = candidate;
+    }
+  });
+  
+  // Group regions by direction after potential reassignments
+  const directionGroups = {};
+  directions.forEach(item => {
+    if (!directionGroups[item.direction]) {
+      directionGroups[item.direction] = [];
+    }
+    directionGroups[item.direction].push(item);
+  });
+  
+  // Sort each group by distance and assign numbers
+  Object.keys(directionGroups).forEach(direction => {
+    const regions = directionGroups[direction];
+    
+    // Sort by distance from center (closest first)
+    regions.sort((a, b) => a.distance - b.distance);
+    
+    // Assign directional IDs
+    regions.forEach((item, index) => {
+      const directionId = `${direction}${index + 1}`;
+      item.region.properties.directionId = directionId;
+      console.log(`Region ${item.region.properties.clusterID} is now ${directionId}`);
+    });
+  });
+  
+  // Copy directional IDs to cluster IDs for backward compatibility
+  geoJson.features.forEach(feature => {
+    feature.properties.originalClusterID = feature.properties.clusterID;
+    feature.properties.clusterID = feature.properties.directionId;
+  });
+}
+
+/**
+ * Calculate bearing between two points
+ * 
+ * @param {number} lat1 - Latitude of first point in degrees
+ * @param {number} lng1 - Longitude of first point in degrees
+ * @param {number} lat2 - Latitude of second point in degrees
+ * @param {number} lng2 - Longitude of second point in degrees
+ * @returns {number} Bearing in degrees (0-360)
+ */
+function calculateBearing(lat1, lng1, lat2, lng2) {
+  // Convert to radians
+  const φ1 = toRadians(lat1);
+  const φ2 = toRadians(lat2);
+  const λ1 = toRadians(lng1);
+  const λ2 = toRadians(lng2);
+  
+  const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) -
+            Math.sin(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1);
+  
+  let bearing = Math.atan2(y, x);
+  bearing = (bearing * 180 / Math.PI + 360) % 360; // Convert to degrees
+  
+  return bearing;
 }
 
 module.exports = {

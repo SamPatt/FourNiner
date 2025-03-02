@@ -84,27 +84,8 @@ class GeoRegions {
     this.regionLayer = L.geoJSON(regions, {
       style: (feature) => this.styleRegion(feature),
       onEachFeature: (feature, layer) => {
-        // Add popup with region info
+        // Add click handler (no popup)
         const props = feature.properties;
-        let popupContent = `<div class="region-popup">
-          <h4>Region ${props.clusterID}</h4>
-          <p>Points: ${props.pointCount}</p>`;
-        
-        // Add year tags if available
-        if (props.yearTags && props.yearTags.length > 0) {
-          popupContent += `<p>Common years: ${props.yearTags.map(y => y.year).join(', ')}</p>`;
-        }
-        
-        // Add climate info if available
-        if (props.climate) {
-          popupContent += `<p>Climate: ${props.climate.code} - ${props.climate.name}</p>`;
-        }
-        
-        popupContent += `</div>`;
-        
-        layer.bindPopup(popupContent);
-        
-        // Add click handler
         layer.on('click', (e) => {
           this.selectRegion(countryId, props.clusterID);
         });
@@ -139,16 +120,17 @@ class GeoRegions {
       weight: 2,
       opacity: 1,
       color: '#333',
-      fillOpacity: 0.6,
+      fillOpacity: 0.2,
       fillColor: this.statusColors[status]
     };
     
-    // Highlight selected region
+    // Highlight selected region - just with borders, not fill
     if (this.selectedRegion && 
         this.selectedRegion.countryId === countryId && 
         this.selectedRegion.regionId === clusterID) {
       style.weight = 4;
       style.color = '#e74c3c';
+      style.fillOpacity = 0; // Remove fill for selected region
     }
     
     return style;
@@ -170,7 +152,17 @@ class GeoRegions {
     
     // Update the UI
     const regionId_str = `r${regionId}`;
-    document.getElementById('selected-cell').textContent = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} Region ${regionId}`;
+    
+    // Get the region feature to access its properties
+    const region = this.getRegion(countryId, regionId);
+    let displayText = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} Region ${region ? region.properties.clusterID : regionId}`;
+    
+    // Add region name if available
+    if (region && region.properties.regionName && region.properties.regionName.displayName) {
+      displayText += ` (${region.properties.regionName.displayName})`;
+    }
+    
+    document.getElementById('selected-cell').textContent = displayText;
     
     // Update region cells in the sidebar
     document.querySelectorAll('.grid-cell').forEach(cell => {
@@ -187,8 +179,214 @@ class GeoRegions {
       this.regionLayer.setStyle((feature) => this.styleRegion(feature));
     }
     
+    // Zoom to the selected region
+    if (region) {
+      // Create a GeoJSON layer just for this region to get its bounds
+      const tempLayer = L.geoJSON(region);
+      this.map.fitBounds(tempLayer.getBounds(), {
+        padding: [50, 50],  // Add some padding
+        maxZoom: 10         // Limit maximum zoom level
+      });
+    }
+    
     // Update flashcard preview
     window.updateFlashcardPreview(countryId, regionId_str);
+    
+    // Update region info sidebar
+    this.updateRegionInfoSidebar(region);
+  }
+  
+  /**
+   * Update the region info sidebar with details about the selected region
+   * 
+   * @param {Object} region - The selected region GeoJSON feature
+   */
+  updateRegionInfoSidebar(region) {
+    // Check if the region info sidebar exists, create it if not
+    let infoSidebar = document.getElementById('region-info-sidebar');
+    
+    if (!infoSidebar) {
+      // Create the region info sidebar
+      infoSidebar = document.createElement('div');
+      infoSidebar.id = 'region-info-sidebar';
+      infoSidebar.className = 'region-info-sidebar';
+      
+      // Create header with collapse button
+      const header = document.createElement('div');
+      header.className = 'info-header';
+      
+      const title = document.createElement('h3');
+      title.textContent = 'Region Information';
+      
+      const collapseBtn = document.createElement('button');
+      collapseBtn.innerHTML = '&times;';
+      collapseBtn.className = 'collapse-btn';
+      collapseBtn.onclick = () => {
+        const content = document.getElementById('region-info-content');
+        if (content.style.display === 'none') {
+          content.style.display = 'block';
+          infoSidebar.classList.remove('collapsed');
+          collapseBtn.innerHTML = '&times;';
+        } else {
+          content.style.display = 'none';
+          infoSidebar.classList.add('collapsed');
+          collapseBtn.innerHTML = '&#9776;'; // Hamburger icon
+        }
+      };
+      
+      header.appendChild(title);
+      header.appendChild(collapseBtn);
+      
+      // Create content area
+      const content = document.createElement('div');
+      content.id = 'region-info-content';
+      content.className = 'info-content';
+      
+      // Add to sidebar
+      infoSidebar.appendChild(header);
+      infoSidebar.appendChild(content);
+      
+      // Add to map container
+      document.querySelector('.main').appendChild(infoSidebar);
+      
+      // Add CSS for the sidebar
+      const style = document.createElement('style');
+      style.textContent = `
+        .region-info-sidebar {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          width: 300px;
+          background-color: white;
+          border-radius: 4px;
+          box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+          z-index: 1000;
+          max-height: 80%;
+          overflow-y: auto;
+          transition: all 0.3s ease;
+        }
+        .region-info-sidebar.collapsed {
+          width: 40px;
+          height: 40px;
+          overflow: hidden;
+        }
+        .info-header {
+          padding: 10px;
+          background-color: #34495e;
+          color: white;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-radius: 4px 4px 0 0;
+        }
+        .info-header h3 {
+          margin: 0;
+          font-size: 16px;
+        }
+        .collapse-btn {
+          background: none;
+          border: none;
+          color: white;
+          font-size: 20px;
+          cursor: pointer;
+          padding: 0;
+        }
+        .info-content {
+          padding: 15px;
+        }
+        .info-row {
+          margin-bottom: 10px;
+        }
+        .info-label {
+          font-weight: bold;
+          margin-bottom: 5px;
+        }
+        .info-value {
+          color: #333;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    // Update the content with region information
+    const content = document.getElementById('region-info-content');
+    
+    if (!region) {
+      content.innerHTML = '<p>No region selected</p>';
+      return;
+    }
+    
+    const props = region.properties;
+    let html = '';
+    
+    // Region ID
+    html += `
+      <div class="info-row">
+        <div class="info-label">Region ID:</div>
+        <div class="info-value">${props.clusterID}</div>
+      </div>
+    `;
+    
+    // Region name if available
+    if (props.regionName && props.regionName.displayName) {
+      html += `
+        <div class="info-row">
+          <div class="info-label">Region Name:</div>
+          <div class="info-value">${props.regionName.displayName}</div>
+        </div>
+      `;
+      
+      // Primary city
+      if (props.regionName.primary) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Primary City:</div>
+            <div class="info-value">${props.regionName.primary.name}</div>
+          </div>
+        `;
+      }
+      
+      // Secondary city
+      if (props.regionName.secondary) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Secondary City:</div>
+            <div class="info-value">${props.regionName.secondary.name}</div>
+          </div>
+        `;
+      }
+    }
+    
+    // Number of points
+    html += `
+      <div class="info-row">
+        <div class="info-label">Coverage Points:</div>
+        <div class="info-value">${props.pointCount}</div>
+      </div>
+    `;
+    
+    // Year tags if available
+    if (props.yearTags && props.yearTags.length > 0) {
+      html += `
+        <div class="info-row">
+          <div class="info-label">Common Years:</div>
+          <div class="info-value">${props.yearTags.map(y => y.year).join(', ')}</div>
+        </div>
+      `;
+    }
+    
+    // Climate info if available
+    if (props.climate) {
+      html += `
+        <div class="info-row">
+          <div class="info-label">Climate:</div>
+          <div class="info-value">${props.climate.code} - ${props.climate.name}</div>
+        </div>
+      `;
+    }
+    
+    // Update content
+    content.innerHTML = html;
   }
   
   /**
@@ -229,7 +427,16 @@ class GeoRegions {
         
         const cell = document.createElement('div');
         cell.className = 'grid-cell';
-        cell.textContent = regionId;
+        
+        // Show directional region ID instead of numeric ID
+        cell.textContent = region.properties.clusterID || regionId;
+        
+        // Add region name as a title attribute for tooltip
+        const regionName = region.properties.regionName;
+        if (regionName && regionName.displayName) {
+          cell.title = regionName.displayName;
+        }
+        
         cell.dataset.cellId = regionId_str;
         cell.dataset.countryId = countryId;
         
