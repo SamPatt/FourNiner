@@ -30,22 +30,51 @@ async function main() {
   // Parse arguments
   const country = args[0];
   
-  // Check if country file exists
-  const dataPath = path.join(__dirname, '..', 'map_data', `${country}.json`);
+  // Check if country directory exists in new structure
+  const countryDir = path.join(__dirname, '..', 'map_data', 'countries', country);
+  const useNewStructure = fs.existsSync(countryDir);
+  
+  // Define paths for both old and new structure
+  let dataPath;
+  if (useNewStructure) {
+    dataPath = path.join(countryDir, `${country}.json`);
+  } else {
+    // Check if country file exists in old structure
+    dataPath = path.join(__dirname, '..', 'map_data', `${country}.json`);
+  }
+  
   if (!fs.existsSync(dataPath)) {
     console.error(`Error: File not found: ${dataPath}`);
     console.error(`Available countries:`);
     
-    // List available countries
+    // List available countries from both structures
     const mapDataDir = path.join(__dirname, '..', 'map_data');
-    const files = fs.readdirSync(mapDataDir)
-      .filter(file => file.endsWith('.json') && !file.includes('_regions'));
+    const countriesDir = path.join(mapDataDir, 'countries');
+    let files = [];
+    
+    // Check old structure
+    if (fs.existsSync(mapDataDir)) {
+      const oldFiles = fs.readdirSync(mapDataDir)
+        .filter(file => file.endsWith('.json') && !file.includes('_regions'));
+      files = [...files, ...oldFiles.map(file => file.replace('.json', ''))];
+    }
+    
+    // Check new structure
+    if (fs.existsSync(countriesDir)) {
+      const newDirs = fs.readdirSync(countriesDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name);
+      files = [...files, ...newDirs];
+    }
+    
+    // Remove duplicates
+    files = [...new Set(files)];
     
     if (files.length === 0) {
-      console.error('  No country data files found in map_data directory');
+      console.error('  No country data files found');
     } else {
       files.forEach(file => {
-        console.error(`  ${file.replace('.json', '')}`);
+        console.error(`  ${file}`);
       });
     }
     
@@ -75,15 +104,31 @@ async function main() {
   console.log(`Options: Köppen data: ${useKoppen ? koppenResolution : 'no'}, Year data: ${useYears ? 'yes' : 'no'}`);
   
   try {
-    // Process the data
+    // Make sure the country directory exists for the new structure
+    const countryDir = path.join(__dirname, '..', 'map_data', 'countries', country);
+    if (!fs.existsSync(countryDir)) {
+      fs.mkdirSync(countryDir, { recursive: true });
+      console.log(`Created directory: ${countryDir}`);
+      
+      // If we're creating a new directory, we should copy the country data file there
+      if (fs.existsSync(path.join(__dirname, '..', 'map_data', `${country}.json`))) {
+        const srcPath = path.join(__dirname, '..', 'map_data', `${country}.json`);
+        const destPath = path.join(countryDir, `${country}.json`);
+        fs.copyFileSync(srcPath, destPath);
+        console.log(`Copied ${country}.json to new directory structure`);
+      }
+    }
+    
+    // Process the data with the new directory structure
     const result = await processCountryData(country, regions, {
       useKoppen,
       koppenResolution,
-      useYearData: useYears
+      useYearData: useYears,
+      useNewDirectoryStructure: true
     });
     
     console.log(`Successfully created ${result.features.length} regions for ${country}`);
-    console.log(`Output saved to map_data/${country}_regions.json`);
+    console.log(`Output saved to map_data/countries/${country}/${country}_regions.json`);
   } catch (error) {
     console.error('Error processing data:', error);
     process.exit(1);

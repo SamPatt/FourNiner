@@ -94,12 +94,20 @@ async function processCountryData(countryId, targetRegions = 32, options = {}) {
     useKoppen: true,
     koppenResolution: '0p5', // Balance between detail and performance
     useYearData: false,
+    useNewDirectoryStructure: false, // Whether to use the new directory structure
     ...options
   };
   
   try {
     // Load the country's street view data
-    const dataPath = path.join(__dirname, '..', 'map_data', `${countryId}.json`);
+    let dataPath;
+    if (opts.useNewDirectoryStructure) {
+      dataPath = path.join(__dirname, '..', 'map_data', 'countries', countryId, `${countryId}.json`);
+    } else {
+      dataPath = path.join(__dirname, '..', 'map_data', `${countryId}.json`);
+    }
+    
+    console.log(`Loading street view data from: ${dataPath}`);
     const rawData = fs.readFileSync(dataPath, 'utf8');
     const streetViewData = JSON.parse(rawData);
     
@@ -110,7 +118,16 @@ async function processCountryData(countryId, targetRegions = 32, options = {}) {
     const regions = await createRegions(points, targetRegions, opts, countryId);
     
     // Save the processed regions
-    const outputPath = path.join(__dirname, '..', 'map_data', `${countryId}_regions.json`);
+    let outputPath;
+    if (opts.useNewDirectoryStructure) {
+      // Use the new directory structure
+      outputPath = path.join(__dirname, '..', 'map_data', 'countries', countryId, `${countryId}_regions.json`);
+    } else {
+      // Use the old directory structure
+      outputPath = path.join(__dirname, '..', 'map_data', `${countryId}_regions.json`);
+    }
+    
+    console.log(`Saving regions to: ${outputPath}`);
     fs.writeFileSync(outputPath, JSON.stringify(regions, null, 2));
     
     console.log(`Created ${regions.features.length} regions for ${countryId}`);
