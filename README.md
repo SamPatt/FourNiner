@@ -1,6 +1,8 @@
-# Geoguessr Trainer
+# FourNiner
 
 A training tool for Geoguessr that helps you systematically learn regions using natural geographic regions based on Street View coverage data or a traditional chess-like grid system. Integrates with Obsidian for flashcard-based learning.
+
+![FourNiner](https://cdn.jsdelivr.net/gh/sampatt/media@main/gifs/fourniner_example.gif) 
 
 ## Features
 
