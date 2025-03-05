@@ -634,7 +634,11 @@ class GeoRegions {
    * @param {Object} locationsData - The location data from the API
    */
   displayLocationMarkers(locationsData) {
-    if (!locationsData || !locationsData.customCoordinates) {
+    // Check which format the data is in
+    const isGeoJSON = locationsData && locationsData.type === 'FeatureCollection' && Array.isArray(locationsData.features);
+    
+    // Check if we have valid location data
+    if (!locationsData || (!isGeoJSON && !locationsData.customCoordinates)) {
       console.log('No location data to display');
       return;
     }
@@ -642,8 +646,15 @@ class GeoRegions {
     // Clear existing markers
     this.clearLocationMarkers();
     
-    const locations = locationsData.customCoordinates;
-    console.log(`Displaying ${locations.length} location markers`);
+    // Get the locations based on format
+    let locations;
+    if (isGeoJSON) {
+      locations = locationsData.features || [];
+      console.log(`Displaying ${locations.length} location markers (GeoJSON format)`);
+    } else {
+      locations = locationsData.customCoordinates || [];
+      console.log(`Displaying ${locations.length} location markers`);
+    }
     
     // Create a layer group for the location markers
     this.locationLayer = L.layerGroup();
@@ -651,8 +662,23 @@ class GeoRegions {
     // Add markers for each location
     console.log(`Creating ${locations.length} markers...`);
     locations.forEach(loc => {
+      // Get coordinates based on format
+      let lat, lng, tags;
+      
+      if (isGeoJSON) {
+        // GeoJSON format: coordinates are [lng, lat] in the geometry
+        lng = loc.geometry.coordinates[0];
+        lat = loc.geometry.coordinates[1];
+        tags = loc.properties?.tags || [];
+      } else {
+        // Old format: direct lat/lng properties
+        lat = loc.lat;
+        lng = loc.lng;
+        tags = loc.extra?.tags || [];
+      }
+      
       // Create a marker for each location
-      const marker = L.circleMarker([loc.lat, loc.lng], {
+      const marker = L.circleMarker([lat, lng], {
         radius: 4,
         fillColor: '#e74c3c',  // Red color for better visibility
         color: '#c0392b',
@@ -663,20 +689,20 @@ class GeoRegions {
       
       // Get year tags if available
       let yearInfo = '';
-      if (loc.extra && loc.extra.tags && loc.extra.tags.length > 0) {
-        yearInfo = '<br>Years: ' + loc.extra.tags.join(', ');
+      if (tags && tags.length > 0) {
+        yearInfo = '<br>Years: ' + tags.join(', ');
       }
       
       // Store the coordinates for later use
       marker.locationData = {
-        lat: loc.lat,
-        lng: loc.lng,
-        yearInfo: loc.extra?.tags || []
+        lat: lat,
+        lng: lng,
+        yearInfo: tags
       };
       
       // Instead of a popup, open Street View when clicked
       marker.on('click', (e) => {
-        this.openStreetView(loc.lat, loc.lng);
+        this.openStreetView(lat, lng);
       });
       
       // No popup info - just open Street View on click

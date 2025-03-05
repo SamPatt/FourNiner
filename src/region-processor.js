@@ -209,9 +209,16 @@ async function createRegions(points, targetRegions, options, countryId = null) {
   
   // 1. First reduce the data if it's too large
   let workingPoints = points;
-  if (points.features.length > 10000) {
+  if (points.features.length > 1000) {
     console.log('Large dataset detected, simplifying...');
-    workingPoints = simplifyPoints(points, Math.min(10000, points.features.length / 3));
+    // Simplify more aggressively for very large datasets
+    const targetCount = 
+      points.features.length > 50000 ? 1000 :
+      points.features.length > 10000 ? 2000 : 
+      Math.min(3000, points.features.length / 5);
+    
+    console.log(`Targeting approximately ${targetCount} points for processing...`);
+    workingPoints = simplifyPoints(points, targetCount);
   }
   
   // 2. Determine clustering parameters

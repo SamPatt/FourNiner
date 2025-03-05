@@ -429,7 +429,13 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
             let filteredLocations = [];
             
             try {
-                console.log(`Filtering ${locationsData.customCoordinates.length} locations for region ${regionId}`);
+                // Check if customCoordinates exists and log appropriately
+                if (locationsData.customCoordinates) {
+                    console.log(`Filtering ${locationsData.customCoordinates.length} locations for region ${regionId}`);
+                } else {
+                    console.warn(`Warning: No customCoordinates found in location data for ${countryId}/${regionId}`);
+                    console.log('locationsData structure:', Object.keys(locationsData));
+                }
                 
                 // Let's try both polygon and bbox approaches for maximum coverage
                 // First use bbox method since it's more reliable
@@ -453,13 +459,31 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
                     console.log(`Manually calculated bbox: ${JSON.stringify(bbox)}`);
                 }
                 
-                // Filter points using bbox
-                filteredLocations = locationsData.customCoordinates.filter(coord => {
-                    return coord.lng >= bbox[0] && 
-                           coord.lng <= bbox[2] && 
-                           coord.lat >= bbox[1] && 
-                           coord.lat <= bbox[3];
-                });
+                // Check if we're dealing with a GeoJSON or older format
+                const isGeoJSON = locationsData.type === 'FeatureCollection' && Array.isArray(locationsData.features);
+                
+                if (isGeoJSON) {
+                    // Filter GeoJSON features based on bbox
+                    filteredLocations = locationsData.features ? locationsData.features.filter(feature => {
+                        const coords = feature.geometry.coordinates;
+                        // In GeoJSON coordinates are [lng, lat]
+                        return coords[0] >= bbox[0] && 
+                               coords[0] <= bbox[2] && 
+                               coords[1] >= bbox[1] && 
+                               coords[1] <= bbox[3];
+                    }) : [];
+                } else {
+                    // Filter older format with customCoordinates
+                    filteredLocations = locationsData.customCoordinates ? locationsData.customCoordinates.filter(coord => {
+                        return coord.lng >= bbox[0] && 
+                               coord.lng <= bbox[2] && 
+                               coord.lat >= bbox[1] && 
+                               coord.lat <= bbox[3];
+                    }) : [];
+                }
+                
+                // Store which format we're using
+                const usingGeoJSON = isGeoJSON;
                 
                 console.log(`Found ${filteredLocations.length} locations within region bbox`);
                 
@@ -470,7 +494,15 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
                 filteredLocations = []; // Empty array as fallback
             }
             
-            locations = { customCoordinates: filteredLocations };
+            // Create locations in the right format based on what we detected earlier
+            if (usingGeoJSON) {
+                locations = { 
+                    type: 'FeatureCollection',
+                    features: filteredLocations 
+                };
+            } else {
+                locations = { customCoordinates: filteredLocations };
+            }
             
             // Cache the results to a file for future use
             fs.writeFileSync(regionLocationsPath, JSON.stringify(locations));
@@ -478,25 +510,113 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
         
         // Apply sampling based on zoom level
         let sampledLocations;
+        
+        // Check if we're dealing with a GeoJSON or older format
+        const isGeoJSON = locations.type === 'FeatureCollection' && Array.isArray(locations.features);
+        
         if (zoomLevel < 6) {  // Lower threshold to make testing easier
             // No locations at very low zoom levels
-            sampledLocations = { customCoordinates: [] };
+            sampledLocations = isGeoJSON ? 
+                { type: 'FeatureCollection', features: [] } : 
+                { customCoordinates: [] };
         } else if (zoomLevel < 10) {  // Lower medium threshold
             // Sample approximately 20% of locations at medium zoom (increased from 10%)
             const sampleRate = 0.2;
-            sampledLocations = { 
-                customCoordinates: locations.customCoordinates.filter(() => Math.random() < sampleRate) 
-            };
+            
+            if (isGeoJSON) {
+                // Handle GeoJSON format 
+                sampledLocations = {
+                    type: 'FeatureCollection',
+                    features: locations.features ? 
+                        locations.features.filter(() => Math.random() < sampleRate) : 
+                        []
+                };
+            } else {
+                // Handle older format with customCoordinates
+                sampledLocations = { 
+                    customCoordinates: locations.customCoordinates && locations.customCoordinates.length > 0 ? 
+                        locations.customCoordinates.filter(() => Math.random() < sampleRate) : 
+                        []
+                };
+            }
         } else {
             // All locations at high zoom
             sampledLocations = locations;
         }
         
-        console.log(`Returning ${sampledLocations.customCoordinates.length} street view locations for zoom level ${zoomLevel}`)
+        // Log the number of locations based on format
+        if (isGeoJSON) {
+            console.log(`Returning ${sampledLocations.features ? sampledLocations.features.length : 0} street view locations (GeoJSON format) for zoom level ${zoomLevel}`);
+        } else {
+            console.log(`Returning ${sampledLocations.customCoordinates ? sampledLocations.customCoordinates.length : 0} street view locations for zoom level ${zoomLevel}`);
+        }
         
         res.json(sampledLocations);
     } catch (error) {
         console.error('Error retrieving region locations:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// API endpoint to get all available countries with data
+app.get('/api/available-countries', (req, res) => {
+    try {
+        // Get all country directories in the map_data/countries directory
+        const countriesDir = path.join(__dirname, 'map_data', 'countries');
+        
+        if (!fs.existsSync(countriesDir)) {
+            return res.status(404).json({
+                error: 'No countries data found',
+                message: 'The countries directory is missing.'
+            });
+        }
+        
+        const countries = [];
+        const dirEntries = fs.readdirSync(countriesDir, { withFileTypes: true });
+        
+        // Filter for directories and require both the country.json and country_regions.json files
+        const availableCountries = dirEntries
+            .filter(dirent => dirent.isDirectory())
+            .filter(dirent => {
+                const countryId = dirent.name;
+                const dataFile = path.join(countriesDir, countryId, `${countryId}.json`);
+                const regionsFile = path.join(countriesDir, countryId, `${countryId}_regions.json`);
+                
+                // Both files must exist for the country to be considered "available"
+                return fs.existsSync(dataFile) && fs.existsSync(regionsFile);
+            })
+            .map(dirent => dirent.name);
+            
+        // Convert country IDs to name/ID pairs with proper formatting
+        availableCountries.forEach(countryId => {
+            // Generate a proper display name from the ID
+            let displayName = countryId
+                .split('-')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(' ');
+                
+            // Handle special cases
+            if (countryId === 'usa') {
+                displayName = 'United States';
+            } else if (countryId === 'uk') {
+                displayName = 'United Kingdom';
+            } else if (countryId === 'uae') {
+                displayName = 'United Arab Emirates';
+            } else if (countryId === 'southafrica') {
+                displayName = 'South Africa';
+            } else if (countryId === 'united-states-of-america') {
+                displayName = 'United States';
+            }
+            
+            countries.push({
+                id: countryId,
+                name: displayName
+            });
+        });
+        
+        res.json(countries);
+    } catch (error) {
+        console.error('Error retrieving available countries:', error);
         res.status(500).json({ error: error.message });
     }
 });

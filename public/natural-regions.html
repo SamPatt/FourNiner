@@ -288,26 +288,8 @@
             <div>
                 <label for="country-select">Select Country:</label>
                 <select id="country-select">
-                    <option value="russia">Russia</option>
-                    <option value="usa">United States</option>
-                    <option value="canada">Canada</option>
-                    <option value="mexico">Mexico</option>
-                    <option value="brazil">Brazil</option>
-                    <option value="argentina">Argentina</option>
-                    <option value="chile">Chile</option>
-                    <option value="peru">Peru</option>
-                    <option value="australia">Australia</option>
-                    <option value="japan">Japan</option>
-                    <option value="mongolia">Mongolia</option>
-                    <option value="kazakhstan">Kazakhstan</option>
-                    <option value="germany">Germany</option>
-                    <option value="poland">Poland</option>
-                    <option value="ukraine">Ukraine</option>
-                    <option value="southafrica">South Africa</option>
-                    <option value="france">France</option>
-                    <option value="spain">Spain</option>
-                    <option value="india">India</option>
-                    <option value="indonesia">Indonesia</option>
+                    <!-- Countries will be populated dynamically -->
+                    <option value="loading">Loading countries...</option>
                 </select>
             </div>
             
@@ -395,7 +377,7 @@
         // Country polygons layer
         let countryPolygonsLayer = null;
         
-        // Country boundaries and their bounding boxes
+        // Country boundaries and their bounding boxes (dynamically extended from the base set)
         const countries = {
             russia: {
                 name: "Russia",
@@ -404,6 +386,12 @@
                 code: "RU"
             },
             usa: {
+                name: "United States",
+                bounds: [[24.5, -125.0], [49.4, -66.9]],
+                coverage: 0.95,
+                code: "US"
+            },
+            "united-states-of-america": {
                 name: "United States",
                 bounds: [[24.5, -125.0], [49.4, -66.9]],
                 coverage: 0.95,
@@ -493,6 +481,12 @@
                 coverage: 0.80,
                 code: "ZA"
             },
+            "south-africa": {
+                name: "South Africa",
+                bounds: [[-34.8, 16.5], [-22.1, 32.9]],
+                coverage: 0.80,
+                code: "ZA"
+            },
             france: {
                 name: "France",
                 bounds: [[41.3, -5.1], [51.1, 9.6]],
@@ -516,8 +510,82 @@
                 bounds: [[-11.0, 95.0], [6.2, 141.0]],
                 coverage: 0.70,
                 code: "ID"
+            },
+            // For countries without specific bounds, we'll use default values
+            // and try to fit the map when data is loaded
+            
+            // Some common European countries
+            italy: {
+                name: "Italy",
+                bounds: [[36.6, 6.6], [47.1, 18.5]],
+                coverage: 0.95,
+                code: "IT"
+            },
+            "united-kingdom": {
+                name: "United Kingdom",
+                bounds: [[49.8, -8.2], [58.8, 1.8]],
+                coverage: 0.98,
+                code: "GB"
+            },
+            norway: {
+                name: "Norway",
+                bounds: [[57.8, 4.5], [71.2, 31.1]],
+                coverage: 0.90,
+                code: "NO"
+            },
+            sweden: {
+                name: "Sweden",
+                bounds: [[55.3, 11.1], [69.1, 24.2]],
+                coverage: 0.90,
+                code: "SE"
+            },
+            finland: {
+                name: "Finland",
+                bounds: [[59.8, 20.6], [70.1, 31.6]],
+                coverage: 0.85,
+                code: "FI"
+            },
+            // Some common Asian countries
+            china: {
+                name: "China",
+                bounds: [[18.2, 73.4], [53.6, 134.8]],
+                coverage: 0.70,
+                code: "CN"
+            },
+            "south-korea": {
+                name: "South Korea",
+                bounds: [[33.1, 125.7], [38.6, 130.0]],
+                coverage: 0.98,
+                code: "KR"
+            },
+            singapore: {
+                name: "Singapore",
+                bounds: [[1.2, 103.6], [1.5, 104.0]],
+                coverage: 0.98,
+                code: "SG"
+            },
+            // Default bounds for any country not listed above
+            "_default": {
+                name: "Default",
+                bounds: [[-60.0, -180.0], [85.0, 180.0]], // World bounds
+                coverage: 0.80,
+                code: "ZZ"
             }
         };
+        
+        // Function to add new countries dynamically
+        function addCountry(id, name, code) {
+            // Skip if country already exists
+            if (countries[id]) return;
+            
+            // Create a new country entry with default values
+            countries[id] = {
+                name: name,
+                bounds: countries._default.bounds, // Use default bounds
+                coverage: 0.80, // Default coverage
+                code: code || id.toUpperCase() // Use provided code or uppercase ID
+            };
+        }
         
         // Store user progress
         let userProgress = {};
@@ -1056,16 +1124,85 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
         // Make the function globally available
         window.loadStreetViewLocations = loadStreetViewLocations;
         
+        // Dynamically populate the country dropdown based on available data
+        async function populateCountryDropdown() {
+            try {
+                // Fetch available countries from the server
+                const response = await fetch('/api/available-countries');
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch available countries: ${response.status} ${response.statusText}`);
+                }
+                
+                const availableCountries = await response.json();
+                console.log(`Found ${availableCountries.length} countries with data`);
+                
+                // Add any missing countries to the countries object
+                availableCountries.forEach(country => {
+                    if (!countries[country.id]) {
+                        // Generate a country code from the ID if not provided
+                        let code = '';
+                        if (country.id.includes('-')) {
+                            // For multi-word IDs, use first letters of each word
+                            code = country.id.split('-').map(word => word.charAt(0).toUpperCase()).join('');
+                        } else {
+                            // For single word IDs, use first two letters uppercase
+                            code = country.id.substring(0, 2).toUpperCase();
+                        }
+                        
+                        addCountry(country.id, country.name, code);
+                        console.log(`Added new country to map: ${country.name} (${country.id})`);
+                    }
+                });
+                
+                // Sort countries alphabetically by name
+                availableCountries.sort((a, b) => {
+                    const nameA = a.name.toLowerCase();
+                    const nameB = b.name.toLowerCase();
+                    return nameA.localeCompare(nameB);
+                });
+                
+                // Get the dropdown element
+                const dropdown = document.getElementById('country-select');
+                
+                // Clear existing options
+                dropdown.innerHTML = '';
+                
+                // Add options for each country
+                availableCountries.forEach(country => {
+                    const option = document.createElement('option');
+                    option.value = country.id;
+                    option.textContent = country.name;
+                    dropdown.appendChild(option);
+                });
+                
+                // Default to the first country
+                if (availableCountries.length > 0) {
+                    window.selectedCountry = availableCountries[0].id;
+                    dropdown.value = window.selectedCountry;
+                }
+            } catch (error) {
+                console.error('Error populating country dropdown:', error);
+                
+                // Fallback to just Russia if there's an error
+                const dropdown = document.getElementById('country-select');
+                dropdown.innerHTML = '<option value="russia">Russia</option>';
+                window.selectedCountry = 'russia';
+            }
+        }
+        
         // Initialize the application
         async function init() {
             // Initialize empty progress
             initializeUserProgress();
             
-            // Initialize global selected country
+            // Initialize global selected country temporarily to 'russia' until we load the dropdown
             window.selectedCountry = 'russia';
             
             // Initialize region selected flag to false
             window.regionSelected = false;
+            
+            // Populate the country dropdown
+            await populateCountryDropdown();
             
             // Add keyboard event listener for Escape key to close Street View modal
             document.addEventListener('keydown', function(e) {
