@@ -558,6 +558,183 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
     }
 });
 
+// API endpoint to get all street view locations for an entire country
+app.get('/api/country-locations/:countryId', (req, res) => {
+    try {
+        const countryId = req.params.countryId.toLowerCase();
+        const zoomLevel = parseInt(req.query.zoom || '0');
+        const maxPoints = parseInt(req.query.max || '5000'); // Default max points to return
+        
+        // Get map bounds if provided
+        const bounds = req.query.bounds ? JSON.parse(req.query.bounds) : null;
+        const hasBounds = bounds && 
+            Array.isArray(bounds) && 
+            bounds.length === 4 && 
+            !isNaN(bounds[0]) && !isNaN(bounds[1]) && !isNaN(bounds[2]) && !isNaN(bounds[3]);
+            
+        console.log(`API request for country locations: country=${countryId}, zoom=${zoomLevel}, maxPoints=${maxPoints}, hasBounds=${hasBounds}`);
+        if (hasBounds) {
+            console.log(`Bounds: SW(${bounds[0]}, ${bounds[1]}) NE(${bounds[2]}, ${bounds[3]})`);
+        }
+        
+        // Check if the country folder exists in the new structure
+        const countryDir = path.join(__dirname, 'map_data', 'countries', countryId);
+        const useNewStructure = fs.existsSync(countryDir);
+        
+        // Load the country locations file
+        let locationsPath;
+        if (useNewStructure) {
+            locationsPath = path.join(countryDir, `${countryId}.json`);
+        } else {
+            locationsPath = path.join(__dirname, 'map_data', `${countryId}.json`);
+        }
+        
+        if (!fs.existsSync(locationsPath)) {
+            return res.status(404).json({
+                error: 'Locations not found',
+                message: `No location data found for country '${countryId}'`
+            });
+        }
+        
+        const locationsData = JSON.parse(fs.readFileSync(locationsPath, 'utf8'));
+        
+        // Check if we're dealing with a GeoJSON or older format
+        const isGeoJSON = locationsData.type === 'FeatureCollection' && Array.isArray(locationsData.features);
+        
+        // Filter by bounds if provided
+        let filteredLocations;
+        if (isGeoJSON) {
+            // Handle GeoJSON format
+            const features = locationsData.features || [];
+            
+            if (hasBounds) {
+                // Filter locations within the visible bounds
+                filteredLocations = features.filter(feature => {
+                    const coords = feature.geometry.coordinates;
+                    // In GeoJSON coordinates are [lng, lat]
+                    return coords[0] >= bounds[1] && // west
+                           coords[0] <= bounds[3] && // east
+                           coords[1] >= bounds[0] && // south
+                           coords[1] <= bounds[2];   // north
+                });
+                console.log(`Filtered to ${filteredLocations.length} locations within visible bounds`);
+            } else {
+                filteredLocations = features;
+            }
+        } else {
+            // Handle older format with customCoordinates
+            const coordinates = locationsData.customCoordinates || [];
+            
+            if (hasBounds) {
+                // Filter locations within the visible bounds
+                filteredLocations = coordinates.filter(coord => {
+                    return coord.lng >= bounds[1] && // west
+                           coord.lng <= bounds[3] && // east
+                           coord.lat >= bounds[0] && // south
+                           coord.lat <= bounds[2];   // north
+                });
+                console.log(`Filtered to ${filteredLocations.length} locations within visible bounds`);
+            } else {
+                filteredLocations = coordinates;
+            }
+        }
+        
+        // Get the number of points after filtering
+        const totalFilteredPoints = filteredLocations.length;
+        
+        // Determine the appropriate sample rate based on max points and filtered points available
+        let sampleRate = 1.0;
+        
+        // First determine baseline rate by zoom level (only use a few discrete levels)
+        if (zoomLevel <= 5) {
+            sampleRate = 0.05; // 5% of points at lowest zoom
+        } else if (zoomLevel <= 7) {
+            sampleRate = 0.30; // 30% of points at medium zoom
+        } else if (zoomLevel <= 9) {
+            sampleRate = 0.75; // 75% of points at higher zoom
+        } // Zoom level 10+ uses 100% of points
+            
+        // Now adjust the rate to never exceed maxPoints
+        if (totalFilteredPoints * sampleRate > maxPoints) {
+            // Calculate what rate would give us maxPoints
+            const adjustedRate = maxPoints / totalFilteredPoints;
+            // Use the more restrictive rate
+            sampleRate = Math.min(sampleRate, adjustedRate);
+        }
+        
+        // Apply the sampling
+        let sampledLocations;
+        
+        // Create a consistent seed based on country and zoom threshold
+        const zoomThreshold = zoomLevel <= 5 ? 5 : (zoomLevel <= 7 ? 7 : (zoomLevel <= 9 ? 9 : 11));
+        const seedBase = countryId + '_' + zoomThreshold;
+        
+        // Simple hash function for creating a seed
+        const getSeed = str => {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return Math.abs(hash);
+        };
+        
+        // Use a consistent seed for random sorting to maintain points across zooms
+        const seed = getSeed(seedBase);
+        
+        // Pseudorandom function with seed
+        const seededRandom = (max, min = 0) => {
+            const x = Math.sin(seed + filteredLocations.length) * 10000;
+            return ((x - Math.floor(x)) * (max - min)) + min;
+        };
+        
+        // Sort by consistent seed-based random values
+        const sortedLocations = [...filteredLocations].sort((a, b) => {
+            const aKey = isGeoJSON ? 
+                `${a.geometry.coordinates[0]},${a.geometry.coordinates[1]}` : 
+                `${a.lng},${a.lat}`;
+            const bKey = isGeoJSON ? 
+                `${b.geometry.coordinates[0]},${b.geometry.coordinates[1]}` : 
+                `${b.lng},${b.lat}`;
+                
+            return seededRandom(1) - 0.5;
+        });
+        
+        const sampleSize = Math.min(Math.ceil(totalFilteredPoints * sampleRate), maxPoints);
+        
+        if (isGeoJSON) {
+            console.log(`Sampling ${totalFilteredPoints} filtered locations with rate ${sampleRate.toFixed(4)} (zoom=${zoomLevel}, max=${maxPoints})`);
+            
+            const sampledFeatures = sortedLocations.slice(0, sampleSize);
+            
+            sampledLocations = {
+                type: 'FeatureCollection',
+                features: sampledFeatures,
+                zoomThreshold: zoomThreshold
+            };
+            
+            console.log(`Returning ${sampledLocations.features.length} of ${totalFilteredPoints} filtered locations (GeoJSON format)`);
+        } else {
+            console.log(`Sampling ${totalFilteredPoints} filtered locations with rate ${sampleRate.toFixed(4)} (zoom=${zoomLevel}, max=${maxPoints})`);
+            
+            const sampledCoordinates = sortedLocations.slice(0, sampleSize);
+            
+            sampledLocations = {
+                customCoordinates: sampledCoordinates,
+                zoomThreshold: zoomThreshold
+            };
+            
+            console.log(`Returning ${sampledLocations.customCoordinates.length} of ${totalFilteredPoints} filtered locations`);
+        }
+        
+        res.json(sampledLocations);
+        
+    } catch (error) {
+        console.error('Error retrieving country locations:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // API endpoint to get all available countries with data
 app.get('/api/available-countries', (req, res) => {
     try {

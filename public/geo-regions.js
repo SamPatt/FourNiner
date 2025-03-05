@@ -19,9 +19,15 @@ class GeoRegions {
     };
     this.selectedRegion = null;
     this.cache = {}; // Cache for street view locations by region
+    this.viewMode = 'regions'; // 'regions' or 'country'
+    this.countryCache = {}; // Cache for country-wide locations
+    this._moveListenersAdded = false;
 
     // Add zoom change listener to handle adaptive loading
     this.map.on('zoomend', () => this.handleZoomChange());
+    
+    // Initialize the country view feature
+    this.initCountryView();
   }
   
   /**
@@ -632,8 +638,10 @@ class GeoRegions {
    * Display location markers on the map
    * 
    * @param {Object} locationsData - The location data from the API
+   * @param {boolean} preserveExisting - Whether to preserve existing markers (default: false)
+   * @param {number} maxPoints - Maximum total points to show (if exceeded, old points will be removed)
    */
-  displayLocationMarkers(locationsData) {
+  displayLocationMarkers(locationsData, preserveExisting = false, maxPoints = 5000) {
     // Check which format the data is in
     const isGeoJSON = locationsData && locationsData.type === 'FeatureCollection' && Array.isArray(locationsData.features);
     
@@ -643,8 +651,8 @@ class GeoRegions {
       return;
     }
     
-    // Clear existing markers
-    this.clearLocationMarkers();
+    // Store the zoom threshold from the data if available
+    const zoomThreshold = locationsData.zoomThreshold;
     
     // Get the locations based on format
     let locations;
@@ -656,12 +664,145 @@ class GeoRegions {
       console.log(`Displaying ${locations.length} location markers`);
     }
     
-    // Create a layer group for the location markers
-    this.locationLayer = L.layerGroup();
+    // Create a map of existing markers by coordinate if we're preserving them
+    const existingMarkers = new Map();
+    if (preserveExisting && this.locationLayer) {
+      this.locationLayer.eachLayer(marker => {
+        if (marker.locationData) {
+          const key = `${marker.locationData.lat},${marker.locationData.lng}`;
+          existingMarkers.set(key, marker);
+        }
+      });
+      console.log(`Preserving ${existingMarkers.size} existing markers`);
+    } else {
+      // Clear existing markers if not preserving
+      this.clearLocationMarkers();
+    }
     
-    // Add markers for each location
-    console.log(`Creating ${locations.length} markers...`);
-    locations.forEach(loc => {
+    // Create a layer group for the location markers if it doesn't exist
+    if (!this.locationLayer) {
+      this.locationLayer = L.layerGroup().addTo(this.map);
+    }
+    
+    // Calculate if we would exceed maxPoints 
+    const totalExpectedMarkers = existingMarkers.size + 
+      locations.filter(loc => {
+        // Check if this marker already exists
+        const locationKey = isGeoJSON ? 
+          `${loc.geometry.coordinates[1]},${loc.geometry.coordinates[0]}` : 
+          `${loc.lat},${loc.lng}`;
+        return !existingMarkers.has(locationKey);
+      }).length;
+    
+    console.log(`Expected total markers: ${totalExpectedMarkers}, max allowed: ${maxPoints}`);
+    
+    // If adding new points would exceed our max, we need to clear some old ones
+    if (totalExpectedMarkers > maxPoints) {
+      if (preserveExisting && this.locationLayer) {
+        console.log(`Removing old markers to stay within the ${maxPoints} limit`);
+        
+        // Calculate how many markers to remove
+        const markersToRemove = totalExpectedMarkers - maxPoints;
+        
+        // Only keep markers in the current view bounds if possible
+        if (this.currentViewBounds) {
+          let outsideViewCount = 0;
+          const toRemove = [];
+          
+          // First count markers outside the current view bounds
+          this.locationLayer.eachLayer(marker => {
+            if (marker.locationData) {
+              const lat = marker.locationData.lat;
+              const lng = marker.locationData.lng;
+              
+              // Check if the marker is outside the current view
+              if (lat < this.currentViewBounds[0] || lat > this.currentViewBounds[2] ||
+                  lng < this.currentViewBounds[1] || lng > this.currentViewBounds[3]) {
+                outsideViewCount++;
+                toRemove.push(marker);
+              }
+            }
+          });
+          
+          console.log(`Found ${outsideViewCount} markers outside current view bounds`);
+          
+          // If we have enough markers outside the view, remove them
+          if (outsideViewCount >= markersToRemove) {
+            // Only remove as many as needed
+            toRemove.slice(0, markersToRemove).forEach(marker => {
+              this.locationLayer.removeLayer(marker);
+              const key = `${marker.locationData.lat},${marker.locationData.lng}`;
+              existingMarkers.delete(key);
+            });
+            console.log(`Removed ${markersToRemove} markers that were outside view bounds`);
+          } else {
+            // We need to remove some markers inside the view too
+            // Remove all outside first
+            toRemove.forEach(marker => {
+              this.locationLayer.removeLayer(marker);
+              const key = `${marker.locationData.lat},${marker.locationData.lng}`;
+              existingMarkers.delete(key);
+            });
+            
+            // Then we need to remove some older markers
+            const remainingToRemove = markersToRemove - outsideViewCount;
+            console.log(`Need to remove ${remainingToRemove} additional markers within view`);
+            
+            // Get array of all markers still in the layer
+            const remainingMarkers = [];
+            this.locationLayer.eachLayer(marker => {
+              remainingMarkers.push(marker);
+            });
+            
+            // Remove oldest markers (first ones added to the group)
+            remainingMarkers.slice(0, remainingToRemove).forEach(marker => {
+              this.locationLayer.removeLayer(marker);
+              const key = `${marker.locationData.lat},${marker.locationData.lng}`;
+              existingMarkers.delete(key);
+            });
+          }
+        } else {
+          // No view bounds info available, just remove oldest markers
+          console.log('No view bounds info, removing oldest markers');
+          
+          // Get array of all markers
+          const allMarkers = [];
+          this.locationLayer.eachLayer(marker => {
+            allMarkers.push(marker);
+          });
+          
+          // Remove oldest markers (first ones added to the group)
+          allMarkers.slice(0, markersToRemove).forEach(marker => {
+            this.locationLayer.removeLayer(marker);
+            const key = `${marker.locationData.lat},${marker.locationData.lng}`;
+            existingMarkers.delete(key);
+          });
+        }
+      } else {
+        // If not preserving, just clear all
+        this.clearLocationMarkers();
+        existingMarkers.clear();
+      }
+    }
+    
+    // Add markers for each location (if not already on the map)
+    console.log(`Processing ${locations.length} location markers...`);
+    let addedCount = 0;
+    
+    // Count how many markers we already have
+    let currentMarkerCount = 0;
+    if (this.locationLayer) {
+      this.locationLayer.eachLayer(() => currentMarkerCount++);
+    }
+    console.log(`Currently have ${currentMarkerCount} markers`);
+    
+    // Only add new markers if we won't exceed maxPoints
+    const canAddCount = Math.max(0, maxPoints - currentMarkerCount);
+    console.log(`Can add up to ${canAddCount} new markers`);
+    
+    // Process locations, but limit to what we can add
+    for (let i = 0; i < locations.length && addedCount < canAddCount; i++) {
+      const loc = locations[i];
       // Get coordinates based on format
       let lat, lng, tags;
       
@@ -677,6 +818,13 @@ class GeoRegions {
         tags = loc.extra?.tags || [];
       }
       
+      // Check if this marker already exists
+      const locationKey = `${lat},${lng}`;
+      if (preserveExisting && existingMarkers.has(locationKey)) {
+        // Marker already exists, skip
+        continue;
+      }
+      
       // Create a marker for each location
       const marker = L.circleMarker([lat, lng], {
         radius: 4,
@@ -687,17 +835,12 @@ class GeoRegions {
         fillOpacity: 0.8
       });
       
-      // Get year tags if available
-      let yearInfo = '';
-      if (tags && tags.length > 0) {
-        yearInfo = '<br>Years: ' + tags.join(', ');
-      }
-      
-      // Store the coordinates for later use
+      // Store the coordinates and zoom threshold for later use
       marker.locationData = {
         lat: lat,
         lng: lng,
-        yearInfo: tags
+        yearInfo: tags,
+        zoomThreshold: zoomThreshold
       };
       
       // Instead of a popup, open Street View when clicked
@@ -705,15 +848,66 @@ class GeoRegions {
         this.openStreetView(lat, lng);
       });
       
-      // No popup info - just open Street View on click
-      // (removed popup to fix issue with info boxes appearing)
-      
       // Add to layer group
       this.locationLayer.addLayer(marker);
+      addedCount++;
+    }
+    
+    console.log(`Added ${addedCount} new markers to the map`);
+    
+    // For debugging: count total markers
+    let totalMarkers = 0;
+    if (this.locationLayer) {
+      this.locationLayer.eachLayer(() => totalMarkers++);
+      console.log(`Total markers on map: ${totalMarkers}`);
+    }
+  }
+  
+  /**
+   * Add map movement listeners for country view mode
+   */
+  addMapMoveListeners() {
+    // Only add once
+    if (this._moveListenersAdded) return;
+    
+    // Listen for the map moveend event to load points in the new view area
+    this.map.on('moveend', () => {
+      if (this.viewMode === 'country' && this.currentCountry) {
+        // Debounce move events to reduce network traffic
+        if (this._moveTimeout) {
+          clearTimeout(this._moveTimeout);
+        }
+        
+        this._moveTimeout = setTimeout(() => {
+          // Use isMove=true to indicate this is from a map move
+          this.loadCountryLocations(this.currentCountry, 5000, true);
+        }, 200); // 200ms debounce
+      }
     });
     
-    // Add the layer group to the map
-    this.locationLayer.addTo(this.map);
+    this._moveListenersAdded = true;
+  }
+  
+  /**
+   * Initialize the country view feature
+   */
+  initCountryView() {
+    // Add map movement listeners
+    this.addMapMoveListeners();
+    
+    // Limit cache size to prevent memory issues
+    this._cleanupCacheInterval = setInterval(() => {
+      // Keep only the 20 most recent cache entries
+      const cacheKeys = Object.keys(this.countryCache);
+      if (cacheKeys.length > 20) {
+        // Sort by timestamp if we added that, or just remove oldest entries
+        const keysToRemove = cacheKeys.slice(0, cacheKeys.length - 20);
+        keysToRemove.forEach(key => {
+          delete this.countryCache[key];
+        });
+        console.log(`Cleaned up location cache, removed ${keysToRemove.length} old entries`);
+      }
+    }, 60000); // Check every minute
   }
   
   /**
@@ -752,12 +946,266 @@ class GeoRegions {
       zoomElement.textContent = `Zoom: ${currentZoom}`;
     }
     
-    // If we have a selected region, reload locations based on new zoom level
-    if (this.selectedRegion) {
-      // Get the actual region to get the proper clusterID
-      const region = this.getRegion(this.selectedRegion.countryId, this.selectedRegion.regionId);
-      const actualRegionId = region ? region.properties.clusterID : this.selectedRegion.regionId;
-      this.loadLocationsByRegion(this.selectedRegion.countryId, actualRegionId);
+    // Store previous zoom to determine if we crossed a threshold
+    const prevZoom = this.lastZoomLevel || currentZoom;
+    this.lastZoomLevel = currentZoom;
+    
+    // Define zoom thresholds for point refreshing
+    const zoomThresholds = [5, 7, 9, 11];
+    
+    // Check if we crossed a threshold in either direction
+    const crossedThreshold = zoomThresholds.some(threshold => 
+      (prevZoom <= threshold && currentZoom > threshold) || 
+      (prevZoom > threshold && currentZoom <= threshold)
+    );
+    
+    // Only reload points if we crossed a threshold
+    if (crossedThreshold) {
+      console.log('Crossed zoom threshold, refreshing points');
+      
+      // Handle zoom change based on view mode
+      if (this.viewMode === 'regions' && this.selectedRegion) {
+        // Get the actual region to get the proper clusterID
+        const region = this.getRegion(this.selectedRegion.countryId, this.selectedRegion.regionId);
+        const actualRegionId = region ? region.properties.clusterID : this.selectedRegion.regionId;
+        this.loadLocationsByRegion(this.selectedRegion.countryId, actualRegionId);
+      } else if (this.viewMode === 'country' && this.currentCountry) {
+        // Reload country-wide points with new zoom level
+        this.loadCountryLocations(this.currentCountry);
+      }
+    }
+  }
+  
+  /**
+   * Toggle between region view and country-wide view
+   * 
+   * @param {string} mode - The view mode ('regions' or 'country')
+   */
+  setViewMode(mode) {
+    if (mode !== 'regions' && mode !== 'country') {
+      console.error(`Invalid view mode: ${mode}`);
+      return;
+    }
+    
+    if (this.viewMode === mode) {
+      console.log(`Already in ${mode} view mode`);
+      return;
+    }
+    
+    console.log(`Switching to ${mode} view mode`);
+    this.viewMode = mode;
+    
+    // Clear any existing location markers
+    this.clearLocationMarkers();
+    
+    // Handle mode change based on new view mode
+    if (mode === 'regions') {
+      // If we have a selected region, reload its locations
+      if (this.selectedRegion) {
+        const region = this.getRegion(this.selectedRegion.countryId, this.selectedRegion.regionId);
+        const actualRegionId = region ? region.properties.clusterID : this.selectedRegion.regionId;
+        this.loadLocationsByRegion(this.selectedRegion.countryId, actualRegionId);
+      }
+      
+      // Make regions visible
+      if (this.regionLayer) {
+        this.regionLayer.setStyle((feature) => {
+          const style = this.styleRegion(feature);
+          style.opacity = 1;
+          return style;
+        });
+      }
+      
+      // Update country borders if they exist
+      if (window.countryPolygonsLayer) {
+        // Reset country styles for region view
+        window.countryPolygonsLayer.setStyle((feature) => {
+          const countryCode = feature.properties.ISO_A2;
+          
+          // Find matching country in our list
+          let countryMatch = null;
+          for (const [id, country] of Object.entries(window.countries)) {
+              if (country.code && country.code === countryCode) {
+                  countryMatch = id;
+                  break;
+              }
+          }
+          
+          // Check if data is available for this country
+          const hasData = countryMatch !== null;
+          
+          // Store country selection state
+          const selectedCountry = window.selectedCountry || this.currentCountry;
+          const isCountrySelected = selectedCountry && countryMatch === selectedCountry;
+          
+          return {
+              fillColor: hasData ? '#3498db' : '#95a5a6',
+              weight: hasData ? 2 : 1,
+              opacity: 1,
+              color: hasData ? '#2980b9' : '#7f8c8d',
+              // Hide fill for selected country or if a region is selected within this country
+              fillOpacity: (hasData && (isCountrySelected || (window.regionSelected && countryMatch === selectedCountry))) ? 0 : (hasData ? 0.4 : 0.1),
+              dashArray: hasData ? null : '3',
+              interactive: hasData
+          };
+        });
+      }
+    } else if (mode === 'country') {
+      // Load all country locations
+      if (this.currentCountry) {
+        this.loadCountryLocations(this.currentCountry);
+      }
+      
+      // Hide regions completely in country mode
+      if (this.regionLayer) {
+        this.regionLayer.setStyle((feature) => {
+          const style = this.styleRegion(feature);
+          style.opacity = 0; // Make borders invisible
+          style.fillOpacity = 0; // Make fill invisible
+          return style;
+        });
+      }
+      
+      // Update country borders if they exist
+      if (window.countryPolygonsLayer) {
+        // Set country styles for country view - hide border of selected country
+        window.countryPolygonsLayer.setStyle((feature) => {
+          const countryCode = feature.properties.ISO_A2;
+          
+          // Find matching country in our list
+          let countryMatch = null;
+          for (const [id, country] of Object.entries(window.countries)) {
+              if (country.code && country.code === countryCode) {
+                  countryMatch = id;
+                  break;
+              }
+          }
+          
+          // Check if data is available for this country
+          const hasData = countryMatch !== null;
+          
+          // Store country selection state
+          const selectedCountry = window.selectedCountry || this.currentCountry;
+          const isCountrySelected = selectedCountry && countryMatch === selectedCountry;
+          
+          return {
+              fillColor: hasData ? '#3498db' : '#95a5a6',
+              weight: hasData ? (isCountrySelected ? 0 : 2) : 1, // Hide border for selected country
+              opacity: 1,
+              color: hasData ? '#2980b9' : '#7f8c8d',
+              // Hide fill for selected country
+              fillOpacity: (hasData && isCountrySelected) ? 0 : (hasData ? 0.4 : 0.1),
+              dashArray: hasData ? null : '3',
+              interactive: hasData
+          };
+        });
+      }
+    }
+    
+    // Mark the selected country as having a region selected
+    // This prevents the country highlight from appearing
+    if (mode === 'country') {
+      window.regionSelected = true;
+    } else {
+      // In region mode, regionSelected depends on whether a region is actually selected
+      window.regionSelected = !!this.selectedRegion;
+    }
+    
+    // Update the view mode toggle button if it exists
+    const toggleButton = document.getElementById('view-mode-toggle');
+    if (toggleButton) {
+      toggleButton.textContent = mode === 'regions' ? 'Show Entire Country' : 'Show Regions';
+    }
+  }
+  
+  /**
+   * Load all street view locations for the current country
+   * 
+   * @param {string} countryId - The country ID
+   * @param {number} maxPoints - Maximum number of points to display (default: 5000)
+   * @param {boolean} isMove - Whether this is from a map move event
+   */
+  async loadCountryLocations(countryId, maxPoints = 5000, isMove = false) {
+    // Skip if we're at a very low zoom level (performance)
+    const currentZoom = this.map.getZoom();
+    if (currentZoom < 5) {
+      console.log('Zoom level too low for country view, skipping location loading');
+      this.clearLocationMarkers(); // Clear markers at very low zoom
+      return;
+    }
+    
+    // Get the current map bounds
+    const bounds = this.map.getBounds();
+    const boundArray = [
+      bounds.getSouth(), // south
+      bounds.getWest(),  // west
+      bounds.getNorth(), // north
+      bounds.getEast()   // east
+    ];
+    
+    // Map zoom level to the nearest threshold for caching purposes
+    let zoomThreshold;
+    if (currentZoom <= 5) zoomThreshold = 5;
+    else if (currentZoom <= 7) zoomThreshold = 7;
+    else if (currentZoom <= 9) zoomThreshold = 9;
+    else zoomThreshold = 11;
+    
+    // Use zoom threshold and bounds for caching
+    // Create a simplified bounds string for the cache key (rounded to 1 decimal place)
+    const boundsKey = boundArray.map(coord => Math.round(coord * 10) / 10).join('_');
+    const cacheKey = `${countryId}_${zoomThreshold}_${maxPoints}_${boundsKey}`;
+    
+    // Track current view bounds
+    this.currentViewBounds = boundArray;
+    
+    if (this.countryCache[cacheKey]) {
+      console.log(`Using cached locations for country ${countryId} at zoom threshold ${zoomThreshold} with bounds`);
+      
+      // If it's a map move, we need to enforce the total marker count
+      if (isMove) {
+        this.displayLocationMarkers(this.countryCache[cacheKey], true, maxPoints);
+      } else {
+        // On zoom changes, just display normally
+        this.displayLocationMarkers(this.countryCache[cacheKey], true, maxPoints);
+      }
+      return;
+    }
+    
+    // Show loading indicator
+    const loadingIndicator = document.getElementById('loading-indicator');
+    if (loadingIndicator) {
+      loadingIndicator.style.display = 'block';
+    }
+    
+    try {
+      console.log(`Loading locations for country ${countryId} at zoom level ${currentZoom} (threshold: ${zoomThreshold}) with bounds`);
+      
+      // Encode the bounds for the URL
+      const boundsParam = encodeURIComponent(JSON.stringify(boundArray));
+      
+      // Fetch country-wide locations from the server with current zoom level, max points and bounds
+      const response = await fetch(`/api/country-locations/${countryId}?zoom=${currentZoom}&max=${maxPoints}&bounds=${boundsParam}`);
+      
+      if (!response.ok) {
+        console.error('Failed to load country locations:', response.status, response.statusText);
+        return;
+      }
+      
+      const data = await response.json();
+      
+      // Cache the results using the zoom threshold and bounds for better reuse
+      this.countryCache[cacheKey] = data;
+      
+      // Display the locations, preserving existing markers when appropriate
+      this.displayLocationMarkers(data, isMove, maxPoints);
+      
+    } catch (error) {
+      console.error('Error loading country locations:', error);
+    } finally {
+      // Hide loading indicator
+      if (loadingIndicator) {
+        loadingIndicator.style.display = 'none';
+      }
     }
   }
   

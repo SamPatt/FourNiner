@@ -293,6 +293,10 @@
                 </select>
             </div>
             
+            <div class="view-mode-container" style="margin-top: 10px;">
+                <button id="view-mode-toggle" class="view-mode-toggle">Show Entire Country</button>
+            </div>
+            
             <div class="progress-container">
                 <h3>Learning Progress</h3>
                 <div>Mastered: <span id="mastered-count">0</span>/<span id="total-regions">0</span></div>
@@ -1331,6 +1335,16 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
             window.userProgress = userProgress;
             window.updateStats = updateStats;
             window.createFlashcardInObsidian = createFlashcardInObsidian;
+            
+            // Add event listener for view mode toggle
+            const viewModeToggle = document.getElementById('view-mode-toggle');
+            if (viewModeToggle) {
+                viewModeToggle.addEventListener('click', function() {
+                    // Toggle between 'regions' and 'country' view modes
+                    const newMode = geoRegions.viewMode === 'regions' ? 'country' : 'regions';
+                    geoRegions.setViewMode(newMode);
+                });
+            }
         }
         
         // Start the application
