@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geoguessr Natural Regions Training System</title>
+    <title>Geoguessr Geographic Regions Training System</title>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <script>
@@ -283,7 +283,7 @@
             <h2>Geoguessr Trainer</h2>
             <div class="mode-bar">
                 <a href="index.html">Chess Grid</a>
-                <a href="natural-regions.html" class="active">Natural Regions</a>
+                <a href="natural-regions.html" class="active">Geographic Regions</a>
             </div>
             <div>
                 <label for="country-select">Select Country:</label>
@@ -294,7 +294,7 @@
             </div>
             
             <div class="view-mode-container" style="margin-top: 10px;">
-                <button id="view-mode-toggle" class="view-mode-toggle">Show Entire Country</button>
+                <button id="view-mode-toggle" class="view-mode-toggle">Show Admin Regions</button>
             </div>
             
             <div class="progress-container">
@@ -305,7 +305,7 @@
             </div>
             
             <div class="regions-grid">
-                <h3>Natural Regions</h3>
+                <h3>Geographic Regions</h3>
                 <div id="grid-container"></div>
             </div>
             
@@ -650,8 +650,8 @@
                             weight: hasData ? 2 : 1,
                             opacity: 1,
                             color: hasData ? '#2980b9' : '#7f8c8d',
-                            // Hide fill for selected country or if a region is selected within this country
-                            fillOpacity: (hasData && (isCountrySelected || (window.regionSelected && countryMatch === selectedCountry))) ? 0 : (hasData ? 0.4 : 0.1),
+                            // Show blue overlay for countries with data, hide when selected
+                            fillOpacity: (hasData && isCountrySelected) ? 0 : (hasData ? 0.4 : 0.1),
                             dashArray: hasData ? null : '3',
                             interactive: hasData
                         };
@@ -708,6 +708,18 @@
                                 document.getElementById('country-select').value = countryMatch;
                                 currentCountry = countryMatch;
                                 window.selectedCountry = countryMatch; // Store selected country globally
+                                
+                                // Get bounds for this country
+                                const countryBounds = countries[countryMatch]?.bounds;
+                                if (countryBounds) {
+                                    // Zoom to country at level 5
+                                    map.setView(
+                                        [(countryBounds[0][0] + countryBounds[1][0]) / 2, 
+                                         (countryBounds[0][1] + countryBounds[1][1]) / 2],
+                                        5
+                                    );
+                                }
+                                
                                 loadCurrentCountry();
                             });
                         }
@@ -1057,8 +1069,8 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
                 // Reset selected region when loading a new country
                 window.selectedRegion = null;
                 
-                // Load the regions for the country
-                const success = await geoRegions.loadRegions(currentCountry);
+                // Load the administrative regions for the country
+                const success = await geoRegions.loadRegions(currentCountry, true);
                 
                 if (success) {
                     // Create the region grid in the sidebar
@@ -1080,6 +1092,9 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
                     
                     // Update the dropdown selection to match the current country
                     document.getElementById('country-select').value = currentCountry;
+                    
+                    // Set to country view by default
+                    geoRegions.setViewMode('country');
                 } else {
                     console.error(`Failed to load regions for ${currentCountry}`);
                 }
@@ -1348,7 +1363,16 @@ ${countries[countryId].name} Region ${regionId.replace('r', '')}${regionName}`;
         }
         
         // Start the application
-        window.onload = init;
+        window.onload = function() {
+            init();
+            
+            // After initialization, ensure we're in country view mode
+            setTimeout(() => {
+                if (geoRegions && geoRegions.viewMode !== 'country') {
+                    geoRegions.setViewMode('country');
+                }
+            }, 500);
+        };
     </script>
 </body>
 </html>

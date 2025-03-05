@@ -302,7 +302,27 @@ app.get('/api/countries', (req, res) => {
 app.get('/api/regions/:countryId', (req, res) => {
     try {
         const countryId = req.params.countryId.toLowerCase();
+        const useAdminRegions = req.query.admin === 'true';
         
+        // Check if admin regions are requested
+        if (useAdminRegions) {
+            console.log(`Looking for administrative regions for ${countryId}`);
+            let adminRegionsPath = path.join(__dirname, 'map_data', 'countries', countryId, `${countryId}_admin_regions.json`);
+            
+            if (fs.existsSync(adminRegionsPath)) {
+                console.log(`Found administrative regions at ${adminRegionsPath}`);
+                const adminRegionsData = fs.readFileSync(adminRegionsPath, 'utf8');
+                const adminRegions = JSON.parse(adminRegionsData);
+                
+                res.json(adminRegions);
+                return;
+            } else {
+                console.log(`Administrative regions not found for ${countryId}, checking for natural regions as fallback`);
+                // If admin regions don't exist, fall back to natural regions
+            }
+        }
+        
+        // Look for natural regions (same as before)
         // First check in the new directory structure
         let regionsPath = path.join(__dirname, 'map_data', 'countries', countryId, `${countryId}_regions.json`);
         
@@ -327,9 +347,13 @@ app.get('/api/regions/:countryId', (req, res) => {
                 }
             }
             
+            const createCommand = useAdminRegions 
+                ? `node src/create-regions.js ${countryId} --admin` 
+                : `node src/create-regions.js ${countryId}`;
+                
             return res.status(404).json({
                 error: 'Regions not generated',
-                message: `Regions have not been generated for '${countryId}'. Run 'node src/create-regions.js ${countryId}' to generate them.`
+                message: `Regions have not been generated for '${countryId}'. Run '${createCommand}' to generate them.`
             });
         }
         
@@ -350,17 +374,28 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
         const countryId = req.params.countryId.toLowerCase();
         const regionId = req.params.regionId;
         const zoomLevel = parseInt(req.query.zoom || '0');
+        const useAdminRegions = req.query.admin === 'true';
         
-        console.log(`API request for locations: country=${countryId}, region=${regionId}, zoom=${zoomLevel}`);
+        console.log(`API request for locations: country=${countryId}, region=${regionId}, zoom=${zoomLevel}, adminRegions=${useAdminRegions}`);
         
         // First, check if the country folder exists in the new structure
         const countryDir = path.join(__dirname, 'map_data', 'countries', countryId);
         const useNewStructure = fs.existsSync(countryDir);
         
-        // Load the country regions to get the polygon for this region
+        // Load the appropriate regions file (admin or natural)
         let regionsPath;
         if (useNewStructure) {
-            regionsPath = path.join(countryDir, `${countryId}_regions.json`);
+            if (useAdminRegions) {
+                regionsPath = path.join(countryDir, `${countryId}_admin_regions.json`);
+                
+                // If admin regions file doesn't exist, fall back to natural regions
+                if (!fs.existsSync(regionsPath)) {
+                    console.log(`Admin regions file not found, falling back to natural regions`);
+                    regionsPath = path.join(countryDir, `${countryId}_regions.json`);
+                }
+            } else {
+                regionsPath = path.join(countryDir, `${countryId}_regions.json`);
+            }
         } else {
             regionsPath = path.join(__dirname, 'map_data', `${countryId}_regions.json`);
         }
@@ -374,9 +409,16 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
         
         const regionsData = JSON.parse(fs.readFileSync(regionsPath, 'utf8'));
         
-        // Find the specific region by ID
+        // Find the specific region by ID, checking both clusterID and regionCode (for admin regions)
+        // Convert numeric string to number for comparison if needed
+        const numericRegionId = !isNaN(regionId) ? parseInt(regionId, 10) : regionId;
+        
         const region = regionsData.features.find(feature => 
-            feature.properties.clusterID === regionId);
+            // Try exact string match first
+            (feature.properties.clusterID === regionId) || 
+            (feature.properties.regionCode === regionId) ||
+            // Try numeric comparison for clusterID if regionId is a number
+            (typeof feature.properties.clusterID === 'number' && feature.properties.clusterID === numericRegionId));
         
         if (!region) {
             return res.status(404).json({
@@ -404,8 +446,13 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
         
         // Check if we have a preprocessed file for this region already
         let regionLocationsPath;
+        // For admin regions, the file name format is different
         if (useNewStructure) {
-            regionLocationsPath = path.join(countryDir, `${countryId}_${regionId}_locations.json`);
+            if (useAdminRegions && region.properties.regionCode) {
+                regionLocationsPath = path.join(countryDir, `${countryId}_${region.properties.regionCode}_locations.json`);
+            } else {
+                regionLocationsPath = path.join(countryDir, `${countryId}_${regionId}_locations.json`);
+            }
         } else {
             regionLocationsPath = path.join(__dirname, 'map_data', `${countryId}_${regionId}_locations.json`);
         }
@@ -413,6 +460,7 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
         let locations;
         if (fs.existsSync(regionLocationsPath)) {
             // Use preprocessed file if it exists
+            console.log(`Using preprocessed locations file: ${regionLocationsPath}`);
             locations = JSON.parse(fs.readFileSync(regionLocationsPath, 'utf8'));
         } else {
             // Process locations dynamically (this could be slow for large datasets)
@@ -506,6 +554,7 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
             
             // Cache the results to a file for future use
             fs.writeFileSync(regionLocationsPath, JSON.stringify(locations));
+            console.log(`Saved locations to ${regionLocationsPath}`);
         }
         
         // Apply sampling based on zoom level
@@ -520,8 +569,8 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
                 { type: 'FeatureCollection', features: [] } : 
                 { customCoordinates: [] };
         } else if (zoomLevel < 10) {  // Lower medium threshold
-            // Sample approximately 20% of locations at medium zoom (increased from 10%)
-            const sampleRate = 0.2;
+            // Sample approximately 50% of locations at medium zoom (increased from 20%)
+            const sampleRate = 0.5;
             
             if (isGeoJSON) {
                 // Handle GeoJSON format 
@@ -540,7 +589,7 @@ app.get('/api/locations/:countryId/:regionId', (req, res) => {
                 };
             }
         } else {
-            // All locations at high zoom
+            // All locations at high zoom (zoom level 10+)
             sampledLocations = locations;
         }
         
@@ -563,7 +612,7 @@ app.get('/api/country-locations/:countryId', (req, res) => {
     try {
         const countryId = req.params.countryId.toLowerCase();
         const zoomLevel = parseInt(req.query.zoom || '0');
-        const maxPoints = parseInt(req.query.max || '5000'); // Default max points to return
+        const maxPoints = parseInt(req.query.max || '3000'); // Default max points to return
         
         // Get map bounds if provided
         const bounds = req.query.bounds ? JSON.parse(req.query.bounds) : null;
@@ -649,9 +698,9 @@ app.get('/api/country-locations/:countryId', (req, res) => {
         if (zoomLevel <= 5) {
             sampleRate = 0.05; // 5% of points at lowest zoom
         } else if (zoomLevel <= 7) {
-            sampleRate = 0.30; // 30% of points at medium zoom
+            sampleRate = 0.40; // 40% of points at medium zoom
         } else if (zoomLevel <= 9) {
-            sampleRate = 0.75; // 75% of points at higher zoom
+            sampleRate = 0.80; // 80% of points at higher zoom
         } // Zoom level 10+ uses 100% of points
             
         // Now adjust the rate to never exceed maxPoints

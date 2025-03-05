@@ -1,14 +1,16 @@
 /**
- * Geoguessr Trainer - Natural Regions Module
+ * Geoguessr Trainer - Regions Module
  * 
- * This module handles the loading and display of natural geographic regions
+ * This module handles the loading and display of geographic regions
  * based on Street View coverage, replacing the chess-like grid.
+ * Supports both natural regions and administrative boundaries.
  */
 
 class GeoRegions {
   constructor(map) {
     this.map = map;
     this.regions = {};
+    this.adminRegions = {}; // Store administrative regions separately
     this.currentCountry = null;
     this.regionLayer = null;
     this.locationLayer = null;
@@ -19,9 +21,10 @@ class GeoRegions {
     };
     this.selectedRegion = null;
     this.cache = {}; // Cache for street view locations by region
-    this.viewMode = 'regions'; // 'regions' or 'country'
+    this.viewMode = 'country'; // Default to 'country' instead of 'regions'
     this.countryCache = {}; // Cache for country-wide locations
     this._moveListenersAdded = false;
+    this.useAdminRegions = true; // Default to using administrative regions
 
     // Add zoom change listener to handle adaptive loading
     this.map.on('zoomend', () => this.handleZoomChange());
@@ -34,42 +37,48 @@ class GeoRegions {
    * Load regions for a specified country
    * 
    * @param {string} countryId - The country ID
+   * @param {boolean} useAdmin - Whether to use administrative regions
    * @returns {Promise<boolean>} Success status
    */
-  async loadRegions(countryId) {
+  async loadRegions(countryId, useAdmin = true) {
     try {
-      console.log(`Loading regions for ${countryId}...`);
+      console.log(`Loading ${useAdmin ? 'administrative' : 'natural'} regions for ${countryId}...`);
       this.currentCountry = countryId;
+      this.useAdminRegions = useAdmin; // Always use admin by default
       
       // Check if already cached
-      if (this.regions[countryId]) {
+      if (useAdmin && this.adminRegions[countryId]) {
         this.displayRegions(countryId);
         return true;
       }
       
-      // Fetch regions from the server
-      const response = await fetch(`/api/regions/${countryId}`);
+      // Fetch regions from the server - always request administrative regions
+      const url = `/api/regions/${countryId}?admin=true`;
+      
+      const response = await fetch(url);
       
       if (!response.ok) {
         const error = await response.json();
-        console.error(`Error loading regions: ${error.message}`);
+        console.error(`Error loading administrative regions: ${error.message}`);
         
         // If regions need to be generated, show a message
         if (error.error === 'Regions not generated') {
-          alert('Regions have not been generated for this country yet. Please run the region generation script first.');
+          alert(`Administrative regions have not been generated for this country yet. Please run the region generation script first.`);
         }
         
         return false;
       }
       
       const regions = await response.json();
-      this.regions[countryId] = regions;
+      
+      // Store in the admin regions cache
+      this.adminRegions[countryId] = regions;
       
       // Display the regions
       this.displayRegions(countryId);
       return true;
     } catch (error) {
-      console.error('Error loading regions:', error);
+      console.error(`Error loading administrative regions:`, error);
       return false;
     }
   }
@@ -86,9 +95,13 @@ class GeoRegions {
     }
     this.clearLocationMarkers();
     
-    const regions = this.regions[countryId];
+    // Get the appropriate regions based on whether we're using admin regions or natural regions
+    const regions = this.useAdminRegions ? 
+      this.adminRegions[countryId] : 
+      this.regions[countryId];
+      
     if (!regions || !regions.features || regions.features.length === 0) {
-      console.error(`No regions found for ${countryId}`);
+      console.error(`No ${this.useAdminRegions ? 'administrative' : 'natural'} regions found for ${countryId}`);
       return;
     }
     
@@ -98,8 +111,12 @@ class GeoRegions {
       onEachFeature: (feature, layer) => {
         // Add click handler (no popup)
         const props = feature.properties;
+        const regionId = this.useAdminRegions && props.regionCode ? 
+          props.regionCode : 
+          props.clusterID;
+          
         layer.on('click', (e) => {
-          this.selectRegion(countryId, props.clusterID);
+          this.selectRegion(countryId, regionId);
         });
       }
     }).addTo(this.map);
@@ -116,15 +133,25 @@ class GeoRegions {
    */
   styleRegion(feature) {
     const props = feature.properties;
-    const clusterID = props.clusterID;
+    
+    // Get the appropriate region ID based on type (admin or natural)
+    const regionId = this.useAdminRegions && props.regionCode ? 
+      props.regionCode : 
+      props.clusterID;
+      
     const countryId = this.currentCountry;
     
+    // Generate the progress ID - for admin regions it's the region code, for natural it's r+clusterID
+    const progressId = this.useAdminRegions ? 
+      regionId : 
+      `r${regionId}`;
+      
     // Get the region status from user progress
     let status = 'untouched';
     if (window.userProgress && 
         window.userProgress[countryId] && 
-        window.userProgress[countryId][`r${clusterID}`]) {
-      status = window.userProgress[countryId][`r${clusterID}`];
+        window.userProgress[countryId][progressId]) {
+      status = window.userProgress[countryId][progressId];
     }
     
     // Base style
@@ -139,7 +166,7 @@ class GeoRegions {
     // Highlight selected region - just with borders, not fill
     if (this.selectedRegion && 
         this.selectedRegion.countryId === countryId && 
-        this.selectedRegion.regionId === clusterID) {
+        this.selectedRegion.regionId === regionId) {
       style.weight = 4;
       style.color = '#e74c3c';
       style.fillOpacity = 0; // Remove fill for selected region
@@ -156,10 +183,10 @@ class GeoRegions {
    * Select a region
    * 
    * @param {string} countryId - The country ID
-   * @param {number} regionId - The region ID
+   * @param {string|number} regionId - The region ID (could be admin code or natural region ID)
    */
   selectRegion(countryId, regionId) {
-    console.log(`Selected region ${regionId} in ${countryId}`);
+    console.log(`Selected ${this.useAdminRegions ? 'admin' : 'natural'} region ${regionId} in ${countryId}`);
     
     // Clear any existing location markers when changing regions
     this.clearLocationMarkers();
@@ -172,26 +199,53 @@ class GeoRegions {
     // Set this flag to ensure overlays remain disabled while a region is selected
     window.regionSelected = true;
     
-    // Update the UI
-    const regionId_str = `r${regionId}`;
+    // Generate the progress ID for use with the user progress tracking
+    const progressId = this.useAdminRegions ? 
+      regionId : 
+      `r${regionId}`;
     
     // Get the region feature to access its properties
     const region = this.getRegion(countryId, regionId);
-    let displayText = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} Region ${region ? region.properties.clusterID : regionId}`;
     
-    // Add region name if available
-    if (region && region.properties.regionName && region.properties.regionName.displayName) {
-      displayText += ` (${region.properties.regionName.displayName})`;
+    // Create the display text based on region type
+    let displayText;
+    if (this.useAdminRegions) {
+      // For administrative regions, use the official name
+      displayText = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} - `;
+      
+      if (region && region.properties.name) {
+        // Use the admin region name
+        displayText += region.properties.name;
+      } else if (region && region.properties.regionName && region.properties.regionName.displayName) {
+        // Fall back to region name if available
+        displayText += region.properties.regionName.displayName;
+      } else {
+        // Fall back to region code
+        displayText += `Admin Region ${regionId}`;
+      }
+    } else {
+      // For natural regions, use the existing format
+      displayText = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} Region ${region ? region.properties.clusterID : regionId}`;
+      
+      // Add region name if available
+      if (region && region.properties.regionName && region.properties.regionName.displayName) {
+        displayText += ` (${region.properties.regionName.displayName})`;
+      }
     }
     
-    document.getElementById('selected-cell').textContent = displayText;
+    // For admin regions, make sure we show the full name and not just the code
+    if (this.useAdminRegions && region && region.properties.name) {
+      document.getElementById('selected-cell').textContent = `${countryId.charAt(0).toUpperCase() + countryId.slice(1)} - ${region.properties.name}`;
+    } else {
+      document.getElementById('selected-cell').textContent = displayText;
+    }
     
     // Update region cells in the sidebar
     document.querySelectorAll('.grid-cell').forEach(cell => {
       cell.classList.remove('selected-cell');
     });
     
-    const cell = document.querySelector(`.grid-cell[data-cell-id="${regionId_str}"][data-country-id="${countryId}"]`);
+    const cell = document.querySelector(`.grid-cell[data-cell-id="${progressId}"][data-country-id="${countryId}"]`);
     if (cell) {
       cell.classList.add('selected-cell');
     }
@@ -212,19 +266,19 @@ class GeoRegions {
     }
     
     // Update flashcard preview
-    window.updateFlashcardPreview(countryId, regionId_str);
+    window.updateFlashcardPreview(countryId, progressId);
     
     // Update region info sidebar
     this.updateRegionInfoSidebar(region);
     
     // Load street view locations for this region
     // We do this with a slight delay to allow the map zoom animation to complete
-    // For locations API, we need the actual clusterID value, not the r-prefixed version
-    const actualRegionId = region ? region.properties.clusterID : `r${regionId}`;
-    console.log(`Will load locations for ${countryId} region ${actualRegionId} in 500ms`);
+    // Pass the appropriate ID based on type
+    console.log(`Will load locations for ${countryId} region ${regionId} in 500ms`);
     setTimeout(() => {
-      console.log(`Loading locations for ${countryId} region ${actualRegionId} now`);
-      this.loadLocationsByRegion(countryId, actualRegionId);
+      console.log(`Loading locations for ${countryId} region ${regionId} now`);
+      // Include the admin parameter if we're using admin regions
+      this.loadLocationsByRegion(countryId, regionId, this.useAdminRegions);
     }, 500);
   }
   
@@ -368,64 +422,138 @@ class GeoRegions {
     const props = region.properties;
     let html = '';
     
-    // Region ID
-    html += `
-      <div class="info-row">
-        <div class="info-label">Region ID:</div>
-        <div class="info-value">${props.clusterID}</div>
-      </div>
-    `;
-    
-    // Region name if available
-    if (props.regionName && props.regionName.displayName) {
-      html += `
-        <div class="info-row">
-          <div class="info-label">Region Name:</div>
-          <div class="info-value">${props.regionName.displayName}</div>
-        </div>
-      `;
+    // Display content based on region type (admin or natural)
+    if (this.useAdminRegions) {
+      // Administrative region information
       
-      // Primary city
-      if (props.regionName.primary) {
+      // Region ID/Code
+      if (props.regionCode || props.admin_code || props.code) {
         html += `
           <div class="info-row">
-            <div class="info-label">Primary City:</div>
-            <div class="info-value">${props.regionName.primary.name}</div>
+            <div class="info-label">Region Code:</div>
+            <div class="info-value">${props.regionCode || props.admin_code || props.code}</div>
           </div>
         `;
       }
       
-      // Secondary city
-      if (props.regionName.secondary) {
+      // Administrative name
+      if (props.name) {
         html += `
           <div class="info-row">
-            <div class="info-label">Secondary City:</div>
-            <div class="info-value">${props.regionName.secondary.name}</div>
+            <div class="info-label">Name:</div>
+            <div class="info-value">${props.name}</div>
           </div>
         `;
       }
-    }
-    
-    // Removed points section as requested
-    
-    // Year tags if available
-    if (props.yearTags && props.yearTags.length > 0) {
+      
+      // Admin level
+      if (props.admin_level !== undefined) {
+        let levelDesc = '';
+        switch(props.admin_level) {
+          case 1: levelDesc = '(State/Province)'; break;
+          case 2: levelDesc = '(County/District)'; break;
+          case 3: levelDesc = '(Municipality)'; break;
+          case 4: levelDesc = '(Locality)'; break;
+          default: levelDesc = '';
+        }
+        
+        html += `
+          <div class="info-row">
+            <div class="info-label">Admin Level:</div>
+            <div class="info-value">${props.admin_level} ${levelDesc}</div>
+          </div>
+        `;
+      }
+      
+      // Population (if available)
+      if (props.population) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Population:</div>
+            <div class="info-value">${Number(props.population).toLocaleString()}</div>
+          </div>
+        `;
+      }
+      
+      // Alternative names or local names
+      if (props.local_name) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Local Name:</div>
+            <div class="info-value">${props.local_name}</div>
+          </div>
+        `;
+      }
+      
+      // Try some common properties for major city
+      if (props.capital || props.main_city) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Major City:</div>
+            <div class="info-value">${props.capital || props.main_city}</div>
+          </div>
+        `;
+      }
+    } else {
+      // Natural region information
+      
+      // Region ID
       html += `
         <div class="info-row">
-          <div class="info-label">Common Years:</div>
-          <div class="info-value">${props.yearTags.map(y => y.year).join(', ')}</div>
+          <div class="info-label">Region ID:</div>
+          <div class="info-value">${props.clusterID}</div>
         </div>
       `;
-    }
-    
-    // Climate info if available
-    if (props.climate) {
-      html += `
-        <div class="info-row">
-          <div class="info-label">Climate:</div>
-          <div class="info-value">${props.climate.code} - ${props.climate.name}</div>
-        </div>
-      `;
+      
+      // Region name if available
+      if (props.regionName && props.regionName.displayName) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Region Name:</div>
+            <div class="info-value">${props.regionName.displayName}</div>
+          </div>
+        `;
+        
+        // Primary city
+        if (props.regionName.primary) {
+          html += `
+            <div class="info-row">
+              <div class="info-label">Primary City:</div>
+              <div class="info-value">${props.regionName.primary.name}</div>
+            </div>
+          `;
+        }
+        
+        // Secondary city
+        if (props.regionName.secondary) {
+          html += `
+            <div class="info-row">
+              <div class="info-label">Secondary City:</div>
+              <div class="info-value">${props.regionName.secondary.name}</div>
+            </div>
+          `;
+        }
+      }
+      
+      // Year tags if available
+      if (props.yearTags && props.yearTags.length > 0) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Common Years:</div>
+            <div class="info-value">${props.yearTags.map(y => y.year).join(', ')}</div>
+          </div>
+        `;
+      }
+      
+      // Climate info if available
+      if (props.climate) {
+        html += `
+          <div class="info-row">
+            <div class="info-label">Climate:</div>
+            <div class="info-value">${props.climate.code} - ${props.climate.name}</div>
+          </div>
+        `;
+      }
     }
     
     // Update content
@@ -438,17 +566,34 @@ class GeoRegions {
    * @param {string} countryId - The country ID
    */
   createRegionGrid(countryId) {
-    const regions = this.regions[countryId];
-    if (!regions || !regions.features || regions.features.length === 0) {
-      console.error(`No regions found for ${countryId}`);
+    // Always use administrative regions
+    this.useAdminRegions = true;
+    const regionsCollection = this.adminRegions[countryId];
+      
+    if (!regionsCollection || !regionsCollection.features || regionsCollection.features.length === 0) {
+      console.error(`No administrative regions found for ${countryId}`);
       return;
     }
     
     const gridContainer = document.getElementById('grid-container');
     gridContainer.innerHTML = '';
     
+    // Display the administrative regions header
+    const headerContainer = document.createElement('div');
+    headerContainer.className = 'region-type-header';
+    headerContainer.style.marginBottom = '10px';
+    headerContainer.style.textAlign = 'center';
+    
+    const headerLabel = document.createElement('div');
+    headerLabel.textContent = 'Administrative Regions';
+    headerLabel.style.fontSize = '14px';
+    headerLabel.style.fontWeight = 'bold';
+    
+    headerContainer.appendChild(headerLabel);
+    gridContainer.appendChild(headerContainer);
+    
     // Get the number of regions
-    const numRegions = regions.features.length;
+    const numRegions = regionsCollection.features.length;
     const gridSize = Math.ceil(Math.sqrt(numRegions));
     
     // Create grid layout
@@ -464,20 +609,52 @@ class GeoRegions {
           break;
         }
         
-        const region = regions.features[index];
-        const regionId = region.properties.clusterID;
-        const regionId_str = `r${regionId}`;
+        const region = regionsCollection.features[index];
+        
+        // Get the appropriate region ID depending on region type
+        let regionId, regionId_str;
+        
+        if (this.useAdminRegions) {
+          // For admin regions, use the region code
+          regionId = region.properties.regionCode || 
+                    region.properties.admin_code || 
+                    region.properties.code ||
+                    region.properties.clusterID;
+          regionId_str = regionId; // Admin regions use the code directly
+        } else {
+          // For natural regions, use the cluster ID with 'r' prefix
+          regionId = region.properties.clusterID;
+          regionId_str = `r${regionId}`;
+        }
         
         const cell = document.createElement('div');
         cell.className = 'grid-cell';
         
-        // Show directional region ID instead of numeric ID
-        cell.textContent = region.properties.clusterID || regionId;
+        // Display text for admin regions
+        if (region.properties.name) {
+          // Show abbreviated name (first 4 chars)
+          cell.textContent = region.properties.name.substring(0, 4);
+        } else if (regionId.includes('-')) {
+          // Show just the region part of the code (e.g., "CA" instead of "US-CA")
+          const parts = regionId.split('-');
+          cell.textContent = parts[parts.length - 1];
+        } else {
+          // Fall back to region code
+          cell.textContent = regionId;
+        }
         
-        // Add region name as a title attribute for tooltip
-        const regionName = region.properties.regionName;
-        if (regionName && regionName.displayName) {
-          cell.title = regionName.displayName;
+        // Add tooltip based on region type
+        if (this.useAdminRegions) {
+          // For admin regions, show the full name
+          cell.title = region.properties.name || regionId;
+        } else {
+          // For natural regions, show the region name if available
+          const regionName = region.properties.regionName;
+          if (regionName && regionName.displayName) {
+            cell.title = regionName.displayName;
+          } else {
+            cell.title = `Region ${regionId}`;
+          }
         }
         
         cell.dataset.cellId = regionId_str;
@@ -547,27 +724,49 @@ class GeoRegions {
    * @returns {number} Number of regions or 0 if no regions loaded
    */
   getRegionCount() {
-    if (!this.currentCountry || !this.regions[this.currentCountry]) {
+    if (!this.currentCountry) {
       return 0;
     }
     
-    return this.regions[this.currentCountry].features.length;
+    // Use the appropriate collection based on region type
+    const collection = this.useAdminRegions ? 
+      this.adminRegions[this.currentCountry] : 
+      this.regions[this.currentCountry];
+      
+    if (!collection || !collection.features) {
+      return 0;
+    }
+    
+    return collection.features.length;
   }
   
   /**
    * Get a specific region feature
    * 
    * @param {string} countryId - The country ID
-   * @param {number} regionId - The region ID
+   * @param {string|number} regionId - The region ID
    * @returns {Object} GeoJSON feature for the region or null if not found
    */
   getRegion(countryId, regionId) {
-    if (!this.regions[countryId]) {
+    // Always use administrative regions
+    const regionsCollection = this.adminRegions[countryId];
+      
+    if (!regionsCollection) {
       return null;
     }
     
-    return this.regions[countryId].features.find(
-      feature => feature.properties.clusterID === regionId
+    // Try to find the region by any of its potential IDs
+    return regionsCollection.features.find(
+      feature => 
+        // Try all possible ID fields
+        feature.properties.regionCode === regionId || 
+        feature.properties.admin_code === regionId ||
+        feature.properties.code === regionId ||
+        feature.properties.clusterID === regionId ||
+        // Also check if regionId is a numeric string that matches clusterID
+        (typeof feature.properties.clusterID === 'number' && 
+         !isNaN(parseInt(regionId)) && 
+         feature.properties.clusterID === parseInt(regionId))
     );
   }
   
@@ -575,16 +774,20 @@ class GeoRegions {
    * Load street view locations for a region
    * 
    * @param {string} countryId - The country ID
-   * @param {string} regionId - The region ID (without 'r' prefix)
+   * @param {string} regionId - The region ID (could be admin code or natural region ID)
+   * @param {boolean} useAdmin - Whether this is an administrative region 
    */
-  async loadLocationsByRegion(countryId, regionId) {
+  async loadLocationsByRegion(countryId, regionId, useAdmin = true) {
     // Clear any existing location markers
     this.clearLocationMarkers();
     
-    // Make sure we're using the correct format (without 'r' prefix)
-    if (regionId && regionId.startsWith('r')) {
+    // For natural regions, we need to make sure we're using the correct format (without 'r' prefix)
+    if (!useAdmin && regionId && regionId.startsWith('r')) {
       regionId = regionId.substring(1);
     }
+    
+    // Always use admin regions
+    useAdmin = true;
     
     // Skip if we're at a low zoom level
     const currentZoom = this.map.getZoom();
@@ -593,10 +796,11 @@ class GeoRegions {
       return;
     }
     
-    // Check if we have cached locations for this region
-    const cacheKey = `${countryId}_${regionId}`;
+    // Include admin in the cache key
+    const cacheKey = `${countryId}_${regionId}_admin`;
+      
     if (this.cache[cacheKey]) {
-      console.log(`Using cached locations for ${countryId} region ${regionId}`);
+      console.log(`Using cached locations for ${countryId} administrative region ${regionId}`);
       this.displayLocationMarkers(this.cache[cacheKey]);
       return;
     }
@@ -607,10 +811,13 @@ class GeoRegions {
       loadingIndicator.style.display = 'block';
     }
     
-    console.log(`Loading locations for ${countryId} region ${regionId} at zoom level ${currentZoom}`);
+    console.log(`Loading locations for ${countryId} administrative region ${regionId} at zoom level ${currentZoom}`);
     try {
       // Fetch locations from the server with the current zoom level
-      const response = await fetch(`/api/locations/${countryId}/${regionId}?zoom=${currentZoom}`);
+      // Always use admin=true to get administrative regions
+      const url = `/api/locations/${countryId}/${regionId}?zoom=${currentZoom}&admin=true`;
+          
+      const response = await fetch(url);
       
       if (!response.ok) {
         console.error('Failed to load locations:', response.status, response.statusText);
@@ -641,7 +848,7 @@ class GeoRegions {
    * @param {boolean} preserveExisting - Whether to preserve existing markers (default: false)
    * @param {number} maxPoints - Maximum total points to show (if exceeded, old points will be removed)
    */
-  displayLocationMarkers(locationsData, preserveExisting = false, maxPoints = 5000) {
+  displayLocationMarkers(locationsData, preserveExisting = false, maxPoints = 3000) {
     // Check which format the data is in
     const isGeoJSON = locationsData && locationsData.type === 'FeatureCollection' && Array.isArray(locationsData.features);
     
@@ -965,10 +1172,21 @@ class GeoRegions {
       
       // Handle zoom change based on view mode
       if (this.viewMode === 'regions' && this.selectedRegion) {
-        // Get the actual region to get the proper clusterID
+        // Get the actual region
         const region = this.getRegion(this.selectedRegion.countryId, this.selectedRegion.regionId);
-        const actualRegionId = region ? region.properties.clusterID : this.selectedRegion.regionId;
-        this.loadLocationsByRegion(this.selectedRegion.countryId, actualRegionId);
+        
+        if (region) {
+          // For administrative regions, use regionCode as the ID
+          let regionId = this.selectedRegion.regionId;
+          
+          // If this is an admin region, ensure we're using the regionCode
+          if (this.useAdminRegions && region.properties.regionCode) {
+            regionId = region.properties.regionCode;
+          }
+          
+          console.log(`Loading locations for ${this.selectedRegion.countryId} region ${regionId} after zoom change`);
+          this.loadLocationsByRegion(this.selectedRegion.countryId, regionId, this.useAdminRegions);
+        }
       } else if (this.viewMode === 'country' && this.currentCountry) {
         // Reload country-wide points with new zoom level
         this.loadCountryLocations(this.currentCountry);
@@ -1000,11 +1218,20 @@ class GeoRegions {
     
     // Handle mode change based on new view mode
     if (mode === 'regions') {
+      // Always use administrative regions
+      this.useAdminRegions = true;
+      
       // If we have a selected region, reload its locations
       if (this.selectedRegion) {
+        // Get the region and use the regionCode property for admin regions
         const region = this.getRegion(this.selectedRegion.countryId, this.selectedRegion.regionId);
-        const actualRegionId = region ? region.properties.clusterID : this.selectedRegion.regionId;
-        this.loadLocationsByRegion(this.selectedRegion.countryId, actualRegionId);
+        let regionId = this.selectedRegion.regionId;
+        
+        if (region && region.properties.regionCode) {
+          regionId = region.properties.regionCode;
+        }
+        
+        this.loadLocationsByRegion(this.selectedRegion.countryId, regionId, true);
       }
       
       // Make regions visible
@@ -1043,8 +1270,8 @@ class GeoRegions {
               weight: hasData ? 2 : 1,
               opacity: 1,
               color: hasData ? '#2980b9' : '#7f8c8d',
-              // Hide fill for selected country or if a region is selected within this country
-              fillOpacity: (hasData && (isCountrySelected || (window.regionSelected && countryMatch === selectedCountry))) ? 0 : (hasData ? 0.4 : 0.1),
+              // Hide fill for ALL countries as soon as ANY country is selected
+              fillOpacity: (hasData && isCountrySelected) ? 0 : (hasData && window.selectedCountry) ? 0 : (hasData ? 0.4 : 0.1),
               dashArray: hasData ? null : '3',
               interactive: hasData
           };
@@ -1093,8 +1320,8 @@ class GeoRegions {
               weight: hasData ? (isCountrySelected ? 0 : 2) : 1, // Hide border for selected country
               opacity: 1,
               color: hasData ? '#2980b9' : '#7f8c8d',
-              // Hide fill for selected country
-              fillOpacity: (hasData && isCountrySelected) ? 0 : (hasData ? 0.4 : 0.1),
+              // Hide fill for ALL countries when a country is selected
+              fillOpacity: (hasData && isCountrySelected) ? 0 : (hasData && window.selectedCountry) ? 0 : (hasData ? 0.4 : 0.1),
               dashArray: hasData ? null : '3',
               interactive: hasData
           };
@@ -1114,7 +1341,7 @@ class GeoRegions {
     // Update the view mode toggle button if it exists
     const toggleButton = document.getElementById('view-mode-toggle');
     if (toggleButton) {
-      toggleButton.textContent = mode === 'regions' ? 'Show Entire Country' : 'Show Regions';
+      toggleButton.textContent = mode === 'regions' ? 'Show Entire Country' : 'Show Admin Regions';
     }
   }
   
@@ -1125,7 +1352,7 @@ class GeoRegions {
    * @param {number} maxPoints - Maximum number of points to display (default: 5000)
    * @param {boolean} isMove - Whether this is from a map move event
    */
-  async loadCountryLocations(countryId, maxPoints = 5000, isMove = false) {
+  async loadCountryLocations(countryId, maxPoints = 3000, isMove = false) {
     // Skip if we're at a very low zoom level (performance)
     const currentZoom = this.map.getZoom();
     if (currentZoom < 5) {
